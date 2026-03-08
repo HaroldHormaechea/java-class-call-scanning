@@ -5,6 +5,7 @@ import com.hhg.callgraph.model.FieldAccessIndex;
 import com.hhg.callgraph.model.MethodReference;
 import com.hhg.callgraph.model.SourceIndex;
 import com.hhg.callgraph.model.SourceLocation;
+import com.hhg.callgraph.model.TestIndex;
 import com.hhg.callgraph.scanner.ScanResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -45,7 +46,7 @@ class ImpactAnalyzerTest {
         sourceIndex.add(TC2_METHOD, new SourceLocation("TargetClass2.java", 5, 7));
         sourceIndex.add(TC3_METHOD, new SourceLocation("TargetClass3.java", 5, 7));
 
-        ScanResult scanResult = new ScanResult(graph, sourceIndex, new FieldAccessIndex());
+        ScanResult scanResult = new ScanResult(graph, sourceIndex, new FieldAccessIndex(), TestIndex.empty());
         analyzer = new ImpactAnalyzer(scanResult);
     }
 
@@ -174,7 +175,7 @@ class ImpactAnalyzerTest {
             // With --sources src/test/java, that strips to "com/hhg/main/targets/TargetClass3.java"
             // which is an exact package-relative match for TC3_METHOD
             ImpactAnalyzer withSources = new ImpactAnalyzer(
-                    new ScanResult(graph, sourceIndex, new FieldAccessIndex()),
+                    new ScanResult(graph, sourceIndex, new FieldAccessIndex(), TestIndex.empty()),
                     Path.of("src/test/java"));
 
             DiffEntry entry = new DiffEntry("src/test/java/com/hhg/main/targets/TargetClass3.java", Set.of(6));
@@ -190,7 +191,7 @@ class ImpactAnalyzerTest {
             // Even with --sources configured, a path not starting with that root
             // still resolves via the package-qualified suffix match
             ImpactAnalyzer withSources = new ImpactAnalyzer(
-                    new ScanResult(graph, sourceIndex, new FieldAccessIndex()),
+                    new ScanResult(graph, sourceIndex, new FieldAccessIndex(), TestIndex.empty()),
                     Path.of("src/main/java"));
 
             DiffEntry entry = new DiffEntry("src/test/java/com/hhg/main/targets/TargetClass3.java", Set.of(6));
