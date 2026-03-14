@@ -10,12 +10,15 @@ import com.hhg.callgraph.model.TestIndex;
 import com.hhg.callgraph.scanner.test.TestMethodDetector;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TypeInsnNode;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -241,6 +244,29 @@ public class ClassFileScanner {
                                || fieldInsn.getOpcode() == Opcodes.PUTSTATIC;
                 if (isWrite) fieldAccessIndex.addWrite(caller, field);
                 else         fieldAccessIndex.addRead(caller, field);
+            }
+            // Groovy dynamic dispatch: capture class references from NEW, CHECKCAST,
+            // INSTANCEOF, and LDC(Class) instructions. These create synthetic edges
+            // so that Groovy/Spock code that references a class (but calls it via
+            // CallSite) still appears connected in the call graph.
+            if (instruction instanceof TypeInsnNode typeInsn) {
+                String referencedClass = typeInsn.desc;
+                if (!referencedClass.equals(classNode.name) && !referencedClass.startsWith("java/")
+                        && !referencedClass.startsWith("groovy/") && !referencedClass.startsWith("org/codehaus/groovy/")
+                        && !referencedClass.startsWith("org/spockframework/")) {
+                    MethodReference classRef = new MethodReference(referencedClass, "<classref>", "()V");
+                    graph.addCall(caller, classRef);
+                }
+            }
+            if (instruction instanceof LdcInsnNode ldcInsn && ldcInsn.cst instanceof Type type
+                    && type.getSort() == Type.OBJECT) {
+                String referencedClass = type.getInternalName();
+                if (!referencedClass.equals(classNode.name) && !referencedClass.startsWith("java/")
+                        && !referencedClass.startsWith("groovy/") && !referencedClass.startsWith("org/codehaus/groovy/")
+                        && !referencedClass.startsWith("org/spockframework/")) {
+                    MethodReference classRef = new MethodReference(referencedClass, "<classref>", "()V");
+                    graph.addCall(caller, classRef);
+                }
             }
         }
 

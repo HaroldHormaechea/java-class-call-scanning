@@ -36,9 +36,21 @@ public class ImpactAnalyzer {
             }
         }
 
+        // Also include callers of the <classref> sentinel for each affected class.
+        // This catches Groovy/dynamic-dispatch code that references the class without
+        // a direct INVOKE* instruction.
+        Set<String> affectedClasses = new HashSet<>();
+        for (MethodReference method : directlyChanged) {
+            affectedClasses.add(method.getClassName());
+        }
+
         Set<MethodReference> transitiveCallers = new HashSet<>();
         for (MethodReference method : directlyChanged) {
             transitiveCallers.addAll(callGraph.getAllTransitiveCallers(method));
+        }
+        for (String className : affectedClasses) {
+            MethodReference classRef = new MethodReference(className, "<classref>", "()V");
+            transitiveCallers.addAll(callGraph.getAllTransitiveCallers(classRef));
         }
         transitiveCallers.removeAll(directlyChanged);
 

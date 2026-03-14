@@ -137,7 +137,13 @@ public class CallTreePrinter {
     private JsonObject impactCallerNode(MethodReference node, Set<MethodReference> path) {
         JsonObject obj = methodToJsonNode(node);
 
-        List<MethodReference> callers = sorted(graph.getCallersOf(node));
+        // Merge direct callers with callers of the <classref> sentinel (Groovy dynamic dispatch)
+        Set<MethodReference> callerSet = new HashSet<>(graph.getCallersOf(node));
+        MethodReference classRef = new MethodReference(node.getClassName(), "<classref>", "()V");
+        callerSet.addAll(graph.getCallersOf(classRef));
+        // Exclude the <classref> sentinel itself from appearing as a node
+        callerSet.removeIf(m -> "<classref>".equals(m.getMethodName()));
+        List<MethodReference> callers = sorted(callerSet);
 
         if (!callers.isEmpty()) {
             JsonArray childrenArray = new JsonArray();
