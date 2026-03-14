@@ -123,6 +123,38 @@ Prints method count, edge count, source index size, then every `caller → calle
 git diff HEAD~1 | ./gradlew -q run --args="--compiled build/classes/java/test --sources src/main/java --diff-stdin"
 ```
 
+#### Windows / PowerShell notes
+
+PowerShell's `>` operator writes files as UTF-16LE, which differs from the UTF-8 that Git normally produces. The tool handles this automatically, but you can also use any of these approaches:
+
+```powershell
+# Option 1: Pipe directly (recommended — avoids encoding issues entirely)
+git diff HEAD~1..HEAD | java -jar JavaClassCallScanning.jar --compiled build\classes\java\main --sources src\main\java --diff-stdin
+
+# Option 2: Save to file with PowerShell (works — tool detects UTF-16LE)
+git diff HEAD~1..HEAD > changes.patch
+java -jar JavaClassCallScanning.jar --compiled build\classes\java\main --diff changes.patch
+
+# Option 3: Force UTF-8 output
+git diff HEAD~1..HEAD | Out-File -Encoding utf8 changes.patch
+
+# Option 4: Use cmd for redirection (writes plain ASCII/UTF-8)
+cmd /c "git diff HEAD~1..HEAD > changes.patch"
+```
+
+#### Multi-module projects (e.g., Spring Framework)
+
+For multi-module Gradle/Maven projects, point `--compiled` and `--sources` at the specific module:
+
+```powershell
+# Compile a single module
+cd C:\path\to\spring-framework
+.\gradlew :spring-context:compileJava
+
+# Run impact analysis — diff paths are relative, the tool handles the matching
+git diff HEAD~10..HEAD | java -jar JavaClassCallScanning.jar --compiled spring-context\build\classes\java\main --sources spring-context\src\main\java --diff-stdin
+```
+
 Both diff modes output:
 
 ```

@@ -55,6 +55,33 @@ public class ImpactAnalyzer {
         String normalizedPath = filePath.replace('\\', '/');
         String root = sourcesRoot.toString().replace('\\', '/');
         if (!root.endsWith("/")) root += "/";
-        return normalizedPath.startsWith(root) ? normalizedPath.substring(root.length()) : filePath;
+
+        // Direct match: diff path starts with full sources root
+        if (normalizedPath.startsWith(root)) {
+            return normalizedPath.substring(root.length());
+        }
+
+        // Suffix match: diff path is relative (e.g. "spring-context/src/main/java/org/...")
+        // and sources root is absolute. Find the overlapping suffix.
+        int idx = root.indexOf(normalizedPath);
+        if (idx >= 0) {
+            // The diff path contains the sources root path as a prefix
+            // e.g., diff="spring-context/src/main/java/org/Foo.java", root ends with "spring-context/src/main/java/"
+            String diffAfterRoot = normalizedPath.substring(root.length() - idx);
+            if (!diffAfterRoot.isEmpty()) return diffAfterRoot;
+        }
+
+        // Try finding where the diff path's directory overlaps with the end of the root
+        // e.g., root="/.../spring-context/src/main/java/", diff="spring-context/src/main/java/org/Foo.java"
+        for (int i = 1; i < normalizedPath.length(); i++) {
+            if (normalizedPath.charAt(i) == '/') {
+                String prefix = normalizedPath.substring(0, i + 1);
+                if (root.endsWith(prefix)) {
+                    return normalizedPath.substring(i + 1);
+                }
+            }
+        }
+
+        return filePath;
     }
 }

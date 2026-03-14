@@ -1,6 +1,8 @@
 package com.hhg.callgraph.diff;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -21,7 +23,8 @@ public class GitDiffParser {
         int currentLineNumber = 0;
         boolean inHunk = false;
 
-        for (String line : unifiedDiff.split("\n", -1)) {
+        for (String rawLine : unifiedDiff.split("\\r?\\n", -1)) {
+            String line = rawLine.endsWith("\r") ? rawLine.substring(0, rawLine.length() - 1) : rawLine;
             if (line.startsWith("+++ b/")) {
                 if (currentFile != null) {
                     entries.add(new DiffEntry(currentFile, currentLines));
@@ -64,7 +67,24 @@ public class GitDiffParser {
     }
 
     public List<DiffEntry> parseFile(Path path) throws IOException {
-        String content = Files.readString(path);
+        String content = readWithCharsetDetection(path);
         return parse(content);
+    }
+
+    private String readWithCharsetDetection(Path path) throws IOException {
+        byte[] raw = Files.readAllBytes(path);
+        // Detect UTF-16 BOM (ff fe = LE, fe ff = BE) — use UTF_16 which auto-detects and strips BOM
+        if (raw.length >= 2) {
+            int b0 = raw[0] & 0xFF;
+            int b1 = raw[1] & 0xFF;
+            if ((b0 == 0xFF && b1 == 0xFE) || (b0 == 0xFE && b1 == 0xFF)) {
+                return new String(raw, StandardCharsets.UTF_16);
+            }
+        }
+        // Detect UTF-8 BOM (ef bb bf)
+        if (raw.length >= 3 && (raw[0] & 0xFF) == 0xEF && (raw[1] & 0xFF) == 0xBB && (raw[2] & 0xFF) == 0xBF) {
+            return new String(raw, 3, raw.length - 3, StandardCharsets.UTF_8);
+        }
+        return new String(raw, StandardCharsets.UTF_8);
     }
 }
