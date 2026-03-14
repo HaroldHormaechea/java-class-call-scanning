@@ -1,5 +1,9 @@
 package com.hhg.callgraph;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.hhg.callgraph.diff.DiffEntry;
 import com.hhg.callgraph.diff.GitDiffParser;
 import com.hhg.callgraph.diff.ImpactAnalyzer;
@@ -8,9 +12,12 @@ import com.hhg.callgraph.model.CallGraph;
 import com.hhg.callgraph.model.FieldAccessIndex;
 import com.hhg.callgraph.model.FieldReference;
 import com.hhg.callgraph.model.MethodReference;
+import com.hhg.callgraph.model.TestIndex;
 import com.hhg.callgraph.output.CallTreePrinter;
 import com.hhg.callgraph.scanner.ClassFileScanner;
 import com.hhg.callgraph.scanner.ScanResult;
+import com.hhg.callgraph.scanner.test.JUnit5TestDetector;
+import com.hhg.callgraph.scanner.test.SpockTestDetector;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -18,12 +25,20 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 public class CallGraphBuilder {
 
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
     public static ScanResult fromClassesDir(Path dirOrArchive) throws IOException {
-        return new ClassFileScanner().scanPath(dirOrArchive);
+        return fromClassesDirs(List.of(dirOrArchive));
+    }
+
+    public static ScanResult fromClassesDirs(List<Path> paths) throws IOException {
+        return new ClassFileScanner(List.of(
+                new JUnit5TestDetector(),
+                new SpockTestDetector()
+        )).scanPaths(paths);
     }
 
     // -----------------------------------------------------------------------
@@ -31,7 +46,7 @@ public class CallGraphBuilder {
     // -----------------------------------------------------------------------
 
     record CliArgs(
-            Path compiled,       // required
+            List<Path> compiled, // required, one or more paths
             Path sources,        // optional
             String mode,         // "summary" | "diff" | "diff-stdin" | "print-hierarchy"
             Path modeArg,        // diff file path (mode == "diff")
@@ -41,7 +56,7 @@ public class CallGraphBuilder {
 
     /** Parses named flags. Returns null if required flags are missing or a flag is unrecognised. */
     static CliArgs parseArgs(String[] args) {
-        Path compiled = null;
+        List<Path> compiled = new java.util.ArrayList<>();
         Path sources = null;
         String mode = "summary";
         Path modeArg = null;
@@ -53,7 +68,7 @@ public class CallGraphBuilder {
             switch (args[i]) {
                 case "--compiled" -> {
                     if (++i >= args.length) return null;
-                    compiled = Path.of(args[i]);
+                    compiled.add(Path.of(args[i]));
                 }
                 case "--sources" -> {
                     if (++i >= args.length) return null;
@@ -87,11 +102,11 @@ public class CallGraphBuilder {
             i++;
         }
 
-        if (compiled == null) {
+        if (compiled.isEmpty()) {
             System.err.println("Missing required flag: --compiled");
             return null;
         }
-        return new CliArgs(compiled, sources, mode, modeArg, modeArgStr, exportFormat);
+        return new CliArgs(List.copyOf(compiled), sources, mode, modeArg, modeArgStr, exportFormat);
     }
 
     public static void main(String[] args) throws IOException {
@@ -102,8 +117,7 @@ public class CallGraphBuilder {
             return;
         }
 
-        ScanResult result = fromClassesDir(cli.compiled());
-        CallGraph graph = result.callGraph();
+        ScanResult result = fromClassesDirs(cli.compiled());
         boolean json = "json".equals(cli.exportFormat());
 
         switch (cli.mode()) {
@@ -119,9 +133,9 @@ public class CallGraphBuilder {
             case "print-hierarchy" -> printHierarchy(result, cli.modeArgStr(), json);
             default -> {
                 if (json) {
-                    printSummaryJson(graph, result);
+                    printSummaryJson(result);
                 } else {
-                    printSummaryConsole(graph, result);
+                    printSummaryConsole(result);
                 }
             }
         }
@@ -131,7 +145,8 @@ public class CallGraphBuilder {
     // Summary (default mode)
     // -----------------------------------------------------------------------
 
-    private static void printSummaryConsole(CallGraph graph, ScanResult result) {
+    private static void printSummaryConsole(ScanResult result) {
+        CallGraph graph = result.callGraph();
         System.out.println("Methods: " + graph.methodCount());
         System.out.println("Edges:   " + graph.edgeCount());
         System.out.println("Source index entries: " + result.sourceIndex().size());
@@ -142,24 +157,34 @@ public class CallGraphBuilder {
         }
     }
 
-    private static void printSummaryJson(CallGraph graph, ScanResult result) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{");
-        sb.append("\"methodCount\":").append(graph.methodCount()).append(",");
-        sb.append("\"edgeCount\":").append(graph.edgeCount()).append(",");
-        sb.append("\"sourceIndexEntries\":").append(result.sourceIndex().size()).append(",");
-        sb.append("\"edges\":[");
-        boolean first = true;
+    private static void printSummaryJson(ScanResult result) {
+        CallGraph graph = result.callGraph();
+        TestIndex testIndex = result.testIndex();
+
+        JsonObject root = new JsonObject();
+        root.addProperty("methodCount", graph.methodCount());
+        root.addProperty("edgeCount", graph.edgeCount());
+        root.addProperty("sourceIndexEntries", result.sourceIndex().size());
+        root.addProperty("testMethodCount", testIndex.size());
+
+        JsonArray edges = new JsonArray();
         for (MethodReference method : graph.getAllMethods()) {
             for (MethodReference callee : graph.getCalleesOf(method)) {
-                if (!first) sb.append(",");
-                sb.append("{\"caller\":").append(jstr(method.toDisplayString()))
-                  .append(",\"callee\":").append(jstr(callee.toDisplayString())).append("}");
-                first = false;
+                JsonObject edge = new JsonObject();
+                edge.addProperty("caller", method.toDisplayString());
+                edge.addProperty("callee", callee.toDisplayString());
+                if (testIndex.isTestMethod(method)) {
+                    edge.addProperty("callerIsTest", true);
+                }
+                if (testIndex.isTestMethod(callee)) {
+                    edge.addProperty("calleeIsTest", true);
+                }
+                edges.add(edge);
             }
         }
-        sb.append("]}");
-        System.out.println(sb);
+        root.add("edges", edges);
+
+        System.out.println(GSON.toJson(root));
     }
 
     // -----------------------------------------------------------------------
@@ -170,13 +195,13 @@ public class CallGraphBuilder {
         int hashIdx = fqnRef.indexOf('#');
         if (hashIdx < 0) {
             String internalClass = fqnRef.replace('.', '/');
-            printClassMode(result.callGraph(), internalClass, json);
+            printClassMode(result, internalClass, json);
         } else {
             String classPart     = fqnRef.substring(0, hashIdx);
             String memberName    = fqnRef.substring(hashIdx + 1);
             String internalClass = classPart.replace('.', '/');
 
-            boolean foundMethod = printMethodMode(result.callGraph(), internalClass, memberName, json);
+            boolean foundMethod = printMethodMode(result, internalClass, memberName, json);
             boolean foundField  = printFieldMode(result.fieldAccessIndex(), internalClass, memberName, json);
 
             if (!foundMethod && !foundField) {
@@ -185,7 +210,10 @@ public class CallGraphBuilder {
         }
     }
 
-    private static void printClassMode(CallGraph graph, String internalClass, boolean json) {
+    private static void printClassMode(ScanResult result, String internalClass, boolean json) {
+        CallGraph graph = result.callGraph();
+        TestIndex testIndex = result.testIndex();
+
         List<MethodReference> methods = graph.getAllMethods().stream()
                 .filter(m -> m.getClassName().equals(internalClass))
                 .sorted(Comparator.comparing(MethodReference::getMethodName))
@@ -197,19 +225,28 @@ public class CallGraphBuilder {
         }
 
         if (json) {
-            StringBuilder sb = new StringBuilder();
-            sb.append("{\"class\":").append(jstr(internalClass.replace('/', '.'))).append(",\"methods\":[");
-            for (int i = 0; i < methods.size(); i++) {
-                MethodReference m = methods.get(i);
-                if (i > 0) sb.append(",");
-                sb.append("{\"name\":").append(jstr(m.getMethodName()))
-                  .append(",\"descriptor\":").append(jstr(m.getDescriptor()))
-                  .append(",\"callees\":").append(graph.getCalleesOf(m).size())
-                  .append(",\"callers\":").append(graph.getCallersOf(m).size())
-                  .append("}");
+            JsonObject root = new JsonObject();
+            root.addProperty("class", internalClass.replace('/', '.'));
+
+            JsonArray methodsArray = new JsonArray();
+            for (MethodReference m : methods) {
+                JsonObject methodObj = new JsonObject();
+                methodObj.addProperty("name", m.getMethodName());
+                methodObj.addProperty("descriptor", m.getDescriptor());
+                methodObj.addProperty("callees", graph.getCalleesOf(m).size());
+                methodObj.addProperty("callers", graph.getCallersOf(m).size());
+                if (testIndex.isTestMethod(m)) {
+                    methodObj.addProperty("isTest", true);
+                    testIndex.getDescriptor(m).ifPresent(desc -> {
+                        methodObj.addProperty("testType", desc.testType());
+                        methodObj.addProperty("testDisplayName", desc.displayName());
+                    });
+                }
+                methodsArray.add(methodObj);
             }
-            sb.append("]}");
-            System.out.println(sb);
+            root.add("methods", methodsArray);
+
+            System.out.println(GSON.toJson(root));
         } else {
             System.out.println("=== Class: " + simpleName(internalClass) + " ===");
             System.out.println("Methods (" + methods.size() + "):");
@@ -224,8 +261,11 @@ public class CallGraphBuilder {
         }
     }
 
-    private static boolean printMethodMode(CallGraph graph, String internalClass,
+    private static boolean printMethodMode(ScanResult result, String internalClass,
                                            String memberName, boolean json) {
+        CallGraph graph = result.callGraph();
+        TestIndex testIndex = result.testIndex();
+
         List<MethodReference> matches = graph.getAllMethods().stream()
                 .filter(m -> m.getClassName().equals(internalClass) && m.getMethodName().equals(memberName))
                 .toList();
@@ -233,20 +273,25 @@ public class CallGraphBuilder {
         if (matches.isEmpty()) return false;
 
         String displayName = simpleName(internalClass) + "#" + memberName;
-        CallTreePrinter printer = new CallTreePrinter(graph, System.out);
+        CallTreePrinter printer = new CallTreePrinter(graph, System.out, testIndex);
 
         if (json) {
-            StringBuilder sb = new StringBuilder("[");
-            for (int i = 0; i < matches.size(); i++) {
-                if (i > 0) sb.append(",");
-                MethodReference match = matches.get(i);
-                sb.append("{\"method\":").append(jstr(match.toDisplayString()))
-                  .append(",\"calleeTree\":").append(printer.buildCalleeTreeJson(match, 5))
-                  .append(",\"callerTree\":").append(printer.buildCallerTreeJson(match, 5))
-                  .append("}");
+            JsonArray results = new JsonArray();
+            for (MethodReference match : matches) {
+                JsonObject obj = new JsonObject();
+                obj.addProperty("method", match.toDisplayString());
+                if (testIndex.isTestMethod(match)) {
+                    obj.addProperty("isTest", true);
+                    testIndex.getDescriptor(match).ifPresent(desc -> {
+                        obj.addProperty("testType", desc.testType());
+                        obj.addProperty("testDisplayName", desc.displayName());
+                    });
+                }
+                obj.add("calleeTree", printer.buildCalleeTreeJson(match, 5));
+                obj.add("callerTree", printer.buildCallerTreeJson(match, 5));
+                results.add(obj);
             }
-            sb.append("]");
-            System.out.println(sb);
+            System.out.println(GSON.toJson(results));
         } else {
             System.out.println("=== Method: " + displayName + " ===");
             for (MethodReference match : matches) {
@@ -265,26 +310,26 @@ public class CallGraphBuilder {
         if (fields.isEmpty()) return false;
 
         if (json) {
-            StringBuilder sb = new StringBuilder("[");
-            boolean firstField = true;
+            JsonArray results = new JsonArray();
             for (FieldReference field : fields) {
-                if (!firstField) sb.append(",");
-                firstField = false;
-                sb.append("{\"field\":").append(jstr(field.toDisplayString()));
-                sb.append(",\"readBy\":[");
-                sb.append(fieldAccessIndex.getReaders(field).stream()
+                JsonObject obj = new JsonObject();
+                obj.addProperty("field", field.toDisplayString());
+
+                JsonArray readBy = new JsonArray();
+                fieldAccessIndex.getReaders(field).stream()
                         .sorted(Comparator.comparing(MethodReference::toDisplayString))
-                        .map(m -> jstr(m.toDisplayString()))
-                        .collect(Collectors.joining(",")));
-                sb.append("],\"writtenBy\":[");
-                sb.append(fieldAccessIndex.getWriters(field).stream()
+                        .forEach(m -> readBy.add(m.toDisplayString()));
+                obj.add("readBy", readBy);
+
+                JsonArray writtenBy = new JsonArray();
+                fieldAccessIndex.getWriters(field).stream()
                         .sorted(Comparator.comparing(MethodReference::toDisplayString))
-                        .map(m -> jstr(m.toDisplayString()))
-                        .collect(Collectors.joining(",")));
-                sb.append("]}");
+                        .forEach(m -> writtenBy.add(m.toDisplayString()));
+                obj.add("writtenBy", writtenBy);
+
+                results.add(obj);
             }
-            sb.append("]");
-            System.out.println(sb);
+            System.out.println(GSON.toJson(results));
         } else {
             for (FieldReference field : fields) {
                 String displayName = simpleName(field.className()) + "#" + field.fieldName();
@@ -319,24 +364,25 @@ public class CallGraphBuilder {
                                     Path sourcesRoot, boolean json) {
         ImpactAnalyzer analyzer = new ImpactAnalyzer(result, sourcesRoot);
         ImpactResult impact = analyzer.analyze(diffs);
+        TestIndex testIndex = result.testIndex();
 
         Set<MethodReference> direct = impact.directlyChanged();
         Set<MethodReference> transitive = impact.transitiveCallers();
 
         if (json) {
-            StringBuilder sb = new StringBuilder();
-            sb.append("{\"directlyChanged\":[");
-            sb.append(direct.stream()
+            CallTreePrinter printer = new CallTreePrinter(
+                    result.callGraph(), System.out, testIndex);
+
+            JsonObject root = new JsonObject();
+            JsonArray impactedTrees = new JsonArray();
+
+            direct.stream()
                     .sorted(Comparator.comparing(MethodReference::toDisplayString))
-                    .map(m -> jstr(m.toDisplayString()))
-                    .collect(Collectors.joining(",")));
-            sb.append("],\"transitiveCallers\":[");
-            sb.append(transitive.stream()
-                    .sorted(Comparator.comparing(MethodReference::toDisplayString))
-                    .map(m -> jstr(m.toDisplayString()))
-                    .collect(Collectors.joining(",")));
-            sb.append("]}");
-            System.out.println(sb);
+                    .forEach(m -> impactedTrees.add(printer.buildImpactCallerTree(m)));
+
+            root.add("impactedTrees", impactedTrees);
+
+            System.out.println(GSON.toJson(root));
         } else {
             System.out.println("=== Directly Changed Methods (" + direct.size() + ") ===");
             direct.stream()
@@ -367,14 +413,5 @@ public class CallGraphBuilder {
         System.err.println("  --export-format <fmt>     Output format: console (default) or json              [optional]");
         System.err.println();
         System.err.println("<ref> is a dotted class name, optionally with #memberName.");
-    }
-
-    // -----------------------------------------------------------------------
-    // JSON helpers
-    // -----------------------------------------------------------------------
-
-    /** Wraps a string as a JSON string literal, escaping backslashes and double-quotes. */
-    private static String jstr(String s) {
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 }

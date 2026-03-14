@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -24,7 +25,7 @@ class CallGraphBuilderArgsTest {
         void compiledAlone() {
             var cli = parse("--compiled", "build/classes/java/test");
             assertNotNull(cli);
-            assertEquals(Path.of("build/classes/java/test"), cli.compiled());
+            assertEquals(List.of(Path.of("build/classes/java/test")), cli.compiled());
             assertNull(cli.sources());
             assertEquals("summary", cli.mode());
             assertNull(cli.modeArg());
@@ -53,7 +54,7 @@ class CallGraphBuilderArgsTest {
         void compiledAndDiff() {
             var cli = parse("--compiled", "classes", "--diff", "changes.patch");
             assertNotNull(cli);
-            assertEquals(Path.of("classes"), cli.compiled());
+            assertEquals(List.of(Path.of("classes")), cli.compiled());
             assertEquals("diff", cli.mode());
             assertEquals(Path.of("changes.patch"), cli.modeArg());
         }
@@ -88,7 +89,7 @@ class CallGraphBuilderArgsTest {
         void flagOrderIndependent() {
             var cli = parse("--diff", "my.patch", "--compiled", "out");
             assertNotNull(cli);
-            assertEquals(Path.of("out"), cli.compiled());
+            assertEquals(List.of(Path.of("out")), cli.compiled());
             assertEquals("diff", cli.mode());
         }
     }

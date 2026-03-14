@@ -41,6 +41,19 @@ public class FieldAccessIndex {
         return Collections.unmodifiableSet(all);
     }
 
+    public void mergeFrom(FieldAccessIndex other) {
+        for (var entry : other.readers.entrySet()) {
+            for (MethodReference reader : entry.getValue()) {
+                addRead(reader, entry.getKey());
+            }
+        }
+        for (var entry : other.writers.entrySet()) {
+            for (MethodReference writer : entry.getValue()) {
+                addWrite(writer, entry.getKey());
+            }
+        }
+    }
+
     public Set<FieldReference> findByName(String internalClass, String fieldName) {
         Set<FieldReference> result = new HashSet<>();
         for (FieldReference field : getAllFields()) {

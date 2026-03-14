@@ -10,7 +10,7 @@ A bytecode analysis tool that builds a method-level call graph and field access 
 2. Parse a Git diff to identify which source lines changed
 3. Map changed lines back to method bodies using bytecode debug info
 4. Walk the call graph backward to find every caller that is transitively affected
-5. *(Future)* Map the affected set to test classes to produce a minimal test run list
+5. Identify which callers are test methods (JUnit 5, Spock) and output them for selective test execution
 
 ---
 
@@ -31,14 +31,27 @@ Every field access instruction is recorded as a read (`GETFIELD`/`GETSTATIC`) or
 
 Bytecode debug information (`LineNumberTable`) is used to record the line range of every method body. This bridges Git diff line numbers to `MethodReference` keys so impact analysis works without parsing source files.
 
+### Test method detection
+
+The scanner detects test methods via bytecode annotations:
+
+- **JUnit 5** — `@Test`, `@ParameterizedTest`, `@TestFactory`, `@RepeatedTest`, `@TestTemplate`
+- **Spock** — `@FeatureMetadata`
+
+Detected tests are indexed and surfaced in JSON output with `isTest`, `testType`, and `testDisplayName` fields.
+
 ### Git diff impact analysis
 
 Given a unified diff (file or stdin), the tool:
 
 1. Parses added/changed lines per file
 2. Finds methods whose line range contains any changed line
-3. Collects all transitive callers of those methods
-4. Returns two disjoint sets: **directly changed** and **transitive callers**
+3. Builds full caller trees (unlimited depth, cycle-safe) rooted at each changed method
+4. Marks every node that is a test method
+
+In **console** mode, outputs two flat lists: directly changed methods and transitive callers.
+
+In **JSON** mode, outputs `impactedTrees` — full caller hierarchy trees rooted at each directly changed method, with `isTest` markers on test nodes. This is the primary output for selective test execution.
 
 ### Interactive hierarchy explorer (`--print-hierarchy`)
 
@@ -69,25 +82,30 @@ After `./gradlew build`, the self-contained fat JAR is at `build/libs/JavaClassC
 Copy it anywhere and run with `java -jar`:
 
 ```bash
-java -jar JavaClassCallScanning.jar --compiled <dir|jar|war> [--sources <srcDir>]
+java -jar JavaClassCallScanning.jar --compiled <dir|jar|war> [--compiled <dir|jar|war> ...]
+                                    [--sources <srcDir>]
                                     [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>]
+                                    [--export-format console|json]
 ```
 
-Example:
+`--compiled` can be specified multiple times to scan several directories/archives into a single graph. This is useful for scanning both production and test classes together:
 
 ```bash
-java -jar JavaClassCallScanning.jar --compiled /path/to/your/project/build/classes/java/main
-java -jar JavaClassCallScanning.jar --compiled /path/to/app.war --print-hierarchy com.example.OrderService#createOrder
-java -jar JavaClassCallScanning.jar --compiled /path/to/app.war --sources src/main/java --diff-stdin < changes.diff
+java -jar JavaClassCallScanning.jar \
+  --compiled target/classes \
+  --compiled target/test-classes \
+  --sources src/main/java \
+  --diff changes.patch \
+  --export-format json
 ```
 
 ### Using Gradle (development / in-repo)
 
-All flags are named. The only required flag is `--compiled`, which accepts a directory, JAR, or WAR.
-
 ```
-./gradlew run --args="--compiled <dir|jar|war> [--sources <srcDir>]
-                      [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>]"
+./gradlew run --args="--compiled <dir|jar|war> [--compiled <dir|jar|war> ...]
+                      [--sources <srcDir>]
+                      [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>]
+                      [--export-format console|json]"
 ```
 
 ### Default — dump all edges
@@ -123,6 +141,53 @@ Prints method count, edge count, source index size, then every `caller → calle
 git diff HEAD~1 | ./gradlew -q run --args="--compiled build/classes/java/test --sources src/main/java --diff-stdin"
 ```
 
+#### Console output (default)
+
+```
+=== Directly Changed Methods (N) ===
+org.example.Service#doWork
+...
+
+=== Transitive Callers (M) ===
+org.example.Controller#handleRequest
+...
+```
+
+#### JSON output (`--export-format json`)
+
+Produces `impactedTrees` — full caller hierarchy trees rooted at each directly changed method, with unlimited depth and cycle detection:
+
+```json
+{
+  "impactedTrees": [
+    {
+      "className": "org.example.Service",
+      "methodName": "doWork",
+      "fqn": "org.example.Service#doWork",
+      "callers": [
+        {
+          "className": "org.example.Controller",
+          "methodName": "handleRequest",
+          "fqn": "org.example.Controller#handleRequest",
+          "callers": [
+            {
+              "className": "org.example.ControllerTest",
+              "methodName": "testHandleRequest",
+              "fqn": "org.example.ControllerTest#testHandleRequest",
+              "isTest": true,
+              "testType": "JUnit5",
+              "testDisplayName": "testHandleRequest"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Nodes that form a cycle are marked with `"cycle": true` and have no children.
+
 #### Windows / PowerShell notes
 
 PowerShell's `>` operator writes files as UTF-16LE, which differs from the UTF-8 that Git normally produces. The tool handles this automatically, but you can also use any of these approaches:
@@ -144,27 +209,18 @@ cmd /c "git diff HEAD~1..HEAD > changes.patch"
 
 #### Multi-module projects (e.g., Spring Framework)
 
-For multi-module Gradle/Maven projects, point `--compiled` and `--sources` at the specific module:
+For multi-module Gradle/Maven projects, you can point `--compiled` at the specific module or pass multiple paths:
 
 ```powershell
 # Compile a single module
 cd C:\path\to\spring-framework
 .\gradlew :spring-context:compileJava
 
-# Run impact analysis — diff paths are relative, the tool handles the matching
+# Scan one module
 git diff HEAD~10..HEAD | java -jar JavaClassCallScanning.jar --compiled spring-context\build\classes\java\main --sources spring-context\src\main\java --diff-stdin
-```
 
-Both diff modes output:
-
-```
-=== Directly Changed Methods (N) ===
-com/example/Service#doWork (...)V
-...
-
-=== Transitive Callers (M) ===
-com/example/Controller#handleRequest (...)V
-...
+# Scan multiple modules together
+java -jar JavaClassCallScanning.jar --compiled spring-core\build\classes\java\main --compiled spring-context\build\classes\java\main --diff changes.patch
 ```
 
 ### `--print-hierarchy <ref>` — explore the graph interactively
@@ -199,14 +255,14 @@ Prints a callee tree (what this method calls) and a caller tree (what calls this
 === Method: OrderService#createOrder ===
 
 Callee Tree (calls):
-com/hhg/benchmark/service/OrderService#createOrder (...)...
-  com/hhg/benchmark/service/CustomerService#findById ...
-    com/hhg/benchmark/repository/CustomerRepository#findById ...
-  ...
+com.hhg.benchmark.service.OrderService#createOrder
++-- com.hhg.benchmark.service.CustomerService#findById
+|   \-- com.hhg.benchmark.repository.CustomerRepository#findById
+\-- ...
 
 Caller Tree (called by):
-com/hhg/benchmark/service/OrderService#createOrder (...)...
-  com/hhg/benchmark/controller/OrderController#createOrder ...
+com.hhg.benchmark.service.OrderService#createOrder
+\-- com.hhg.benchmark.controller.OrderController#createOrder
 ```
 
 #### Field mode — `#fieldName`
@@ -235,8 +291,9 @@ If the name resolves as both a method and a field, both sections are printed.
 ```
 src/
 ├── main/java/com/hhg/callgraph/   ← the tool itself
-│   ├── model/                     # CallGraph, MethodReference, FieldReference, ...
+│   ├── model/                     # CallGraph, MethodReference, FieldReference, SourceIndex, TestIndex, ...
 │   ├── scanner/                   # ClassFileScanner, ScanResult
+│   │   └── test/                  # JUnit5TestDetector, SpockTestDetector, TestMethodDetector
 │   ├── diff/                      # GitDiffParser, ImpactAnalyzer, ImpactResult
 │   ├── output/                    # CallTreePrinter
 │   └── CallGraphBuilder.java      # main entry point + CLI
@@ -256,13 +313,24 @@ src/
 | `FieldAccessIndex` | `model` | Bidirectional read/write index keyed by `FieldReference` |
 | `SourceLocation` | `model` | File + line range from bytecode `LineNumberTable` |
 | `SourceIndex` | `model` | `MethodReference → SourceLocation`, with `findMethodsAt()` |
-| `ScanResult` | `scanner` | Record: `(CallGraph, SourceIndex, FieldAccessIndex)` |
-| `ClassFileScanner` | `scanner` | Scans directories, JARs, and WARs (incl. nested `WEB-INF/lib/*.jar`); populates all three indexes |
-| `GitDiffParser` | `diff` | Parses unified diff → `List<DiffEntry>` |
-| `ImpactAnalyzer` | `diff` | Produces `ImpactResult` from `ScanResult` + diffs; accepts optional sources root for exact diff path matching |
+| `TestIndex` | `model` | `MethodReference → TestDescriptor`, tracks which methods are tests |
+| `TestDescriptor` | `model` | Record: method + testType + displayName |
+| `ScanResult` | `scanner` | Record: `(CallGraph, SourceIndex, FieldAccessIndex, TestIndex)` |
+| `ClassFileScanner` | `scanner` | Scans directories, JARs, and WARs (incl. nested `WEB-INF/lib/*.jar`); populates all four indexes. Supports scanning multiple paths via `scanPaths()`. |
+| `JUnit5TestDetector` | `scanner.test` | Detects `@Test`, `@ParameterizedTest`, `@TestFactory`, `@RepeatedTest`, `@TestTemplate` |
+| `SpockTestDetector` | `scanner.test` | Detects `@FeatureMetadata` (Spock framework) |
+| `GitDiffParser` | `diff` | Parses unified diff → `List<DiffEntry>`. Handles UTF-8, UTF-16LE/BE, and BOM-prefixed files. |
+| `ImpactAnalyzer` | `diff` | Produces `ImpactResult` from `ScanResult` + diffs; accepts optional sources root. Handles relative-to-absolute path matching for multi-module projects. |
 | `ImpactResult` | `diff` | `directlyChanged` + `transitiveCallers` (disjoint sets) |
-| `CallTreePrinter` | `output` | Recursive tree printer with cycle guard |
-| `CallGraphBuilder` | (root) | Main entry point + CLI dispatch |
+| `CallTreePrinter` | `output` | Console pipe-tree printer + JSON tree builder (callee/caller/impact modes). Cycle-safe with `isTest` annotation on nodes. |
+| `CallGraphBuilder` | (root) | Main entry point + CLI dispatch. Uses Gson for pretty-printed JSON output. |
+
+### Dependencies
+
+| Library | Version | Purpose |
+|---------|---------|---------|
+| ASM | 9.8 | Bytecode reading (ClassReader, ClassNode, MethodNode, MethodInsnNode) |
+| Gson | 2.11.0 | JSON serialization with pretty-printing |
 
 ---
 
@@ -270,4 +338,3 @@ src/
 
 - **Reflection-based calls** — dynamic dispatch via `Method.invoke()` is not tracked
 - **Runtime polymorphism** — virtual dispatch is recorded at the declared call site only; no CHA/RTA
-- **Test-to-method mapping** — identifying which test class covers which production method is planned but not yet implemented

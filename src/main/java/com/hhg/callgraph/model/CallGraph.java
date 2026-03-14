@@ -65,6 +65,14 @@ public class CallGraph {
         return getAllMethods().size();
     }
 
+    public void mergeFrom(CallGraph other) {
+        for (MethodReference caller : other.callerToCallees.keySet()) {
+            for (MethodReference callee : other.callerToCallees.get(caller)) {
+                addCall(caller, callee);
+            }
+        }
+    }
+
     public int edgeCount() {
         int count = 0;
         for (Set<MethodReference> callees : callerToCallees.values()) {

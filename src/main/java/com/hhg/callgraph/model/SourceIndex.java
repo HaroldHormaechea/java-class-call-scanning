@@ -32,6 +32,10 @@ public class SourceIndex {
         return Collections.unmodifiableSet(result);
     }
 
+    public void mergeFrom(SourceIndex other) {
+        locationByMethod.putAll(other.locationByMethod);
+    }
+
     public int size() {
         return locationByMethod.size();
     }

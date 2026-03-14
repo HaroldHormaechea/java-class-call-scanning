@@ -1,7 +1,10 @@
 package com.hhg.callgraph.output;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.hhg.callgraph.model.CallGraph;
 import com.hhg.callgraph.model.MethodReference;
+import com.hhg.callgraph.model.TestIndex;
 
 import java.io.PrintStream;
 import java.util.Comparator;
@@ -13,10 +16,16 @@ public class CallTreePrinter {
 
     private final CallGraph graph;
     private final PrintStream out;
+    private final TestIndex testIndex;
 
     public CallTreePrinter(CallGraph graph, PrintStream out) {
+        this(graph, out, TestIndex.empty());
+    }
+
+    public CallTreePrinter(CallGraph graph, PrintStream out, TestIndex testIndex) {
         this.graph = graph;
         this.out = out;
+        this.testIndex = testIndex;
     }
 
     // -----------------------------------------------------------------------
@@ -65,22 +74,30 @@ public class CallTreePrinter {
     // JSON output
     // -----------------------------------------------------------------------
 
-    public String buildCalleeTreeJson(MethodReference root, int maxDepth) {
+    public JsonObject buildCalleeTreeJson(MethodReference root, int maxDepth) {
         Set<MethodReference> path = new HashSet<>();
         path.add(root);
         return nodeToJson(root, path, 0, maxDepth, true);
     }
 
-    public String buildCallerTreeJson(MethodReference root, int maxDepth) {
+    public JsonObject buildCallerTreeJson(MethodReference root, int maxDepth) {
         Set<MethodReference> path = new HashSet<>();
         path.add(root);
         return nodeToJson(root, path, 0, maxDepth, false);
     }
 
-    private String nodeToJson(MethodReference node, Set<MethodReference> path,
-                              int depth, int maxDepth, boolean callees) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\"method\":").append(jsonString(node.toDisplayString()));
+    private JsonObject nodeToJson(MethodReference node, Set<MethodReference> path,
+                                  int depth, int maxDepth, boolean callees) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("method", node.toDisplayString());
+
+        if (testIndex.isTestMethod(node)) {
+            obj.addProperty("isTest", true);
+            testIndex.getDescriptor(node).ifPresent(desc -> {
+                obj.addProperty("testType", desc.testType());
+                obj.addProperty("testDisplayName", desc.displayName());
+            });
+        }
 
         if (maxDepth <= 0 || depth < maxDepth) {
             List<MethodReference> children = sorted(
@@ -88,19 +105,74 @@ public class CallTreePrinter {
                     .stream().filter(n -> !path.contains(n)).toList();
 
             if (!children.isEmpty()) {
-                sb.append(",\"children\":[");
-                for (int i = 0; i < children.size(); i++) {
-                    if (i > 0) sb.append(",");
-                    path.add(children.get(i));
-                    sb.append(nodeToJson(children.get(i), path, depth + 1, maxDepth, callees));
-                    path.remove(children.get(i));
+                JsonArray childrenArray = new JsonArray();
+                for (MethodReference child : children) {
+                    path.add(child);
+                    childrenArray.add(nodeToJson(child, path, depth + 1, maxDepth, callees));
+                    path.remove(child);
                 }
-                sb.append("]");
+                obj.add("children", childrenArray);
             }
         }
 
-        sb.append("}");
-        return sb.toString();
+        return obj;
+    }
+
+    // -----------------------------------------------------------------------
+    // Impact caller tree — unlimited depth, cycle-safe, split class/method
+    // -----------------------------------------------------------------------
+
+    /**
+     * Builds the full caller tree for a method with unlimited depth.
+     * Stops at cycles (marks them with "cycle": true) and leaves.
+     * Each node has separate className, methodName, and fqn fields,
+     * plus isTest/testType/testDisplayName when applicable.
+     */
+    public JsonObject buildImpactCallerTree(MethodReference root) {
+        Set<MethodReference> path = new HashSet<>();
+        path.add(root);
+        return impactCallerNode(root, path);
+    }
+
+    private JsonObject impactCallerNode(MethodReference node, Set<MethodReference> path) {
+        JsonObject obj = methodToJsonNode(node);
+
+        List<MethodReference> callers = sorted(graph.getCallersOf(node));
+
+        if (!callers.isEmpty()) {
+            JsonArray childrenArray = new JsonArray();
+            for (MethodReference caller : callers) {
+                if (path.contains(caller)) {
+                    JsonObject cycleNode = methodToJsonNode(caller);
+                    cycleNode.addProperty("cycle", true);
+                    childrenArray.add(cycleNode);
+                } else {
+                    path.add(caller);
+                    childrenArray.add(impactCallerNode(caller, path));
+                    path.remove(caller);
+                }
+            }
+            obj.add("callers", childrenArray);
+        }
+
+        return obj;
+    }
+
+    private JsonObject methodToJsonNode(MethodReference node) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("className", node.getClassName().replace('/', '.'));
+        obj.addProperty("methodName", node.getMethodName());
+        obj.addProperty("fqn", node.toDisplayString());
+
+        if (testIndex.isTestMethod(node)) {
+            obj.addProperty("isTest", true);
+            testIndex.getDescriptor(node).ifPresent(desc -> {
+                obj.addProperty("testType", desc.testType());
+                obj.addProperty("testDisplayName", desc.displayName());
+            });
+        }
+
+        return obj;
     }
 
     // -----------------------------------------------------------------------
@@ -111,9 +183,5 @@ public class CallTreePrinter {
         return methods.stream()
                 .sorted(Comparator.comparing(MethodReference::toDisplayString))
                 .toList();
-    }
-
-    static String jsonString(String s) {
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 }

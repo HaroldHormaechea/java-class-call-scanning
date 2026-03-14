@@ -18,6 +18,7 @@ repositories {
 dependencies {
     implementation("org.ow2.asm:asm:9.8")
     implementation("org.ow2.asm:asm-util:9.8")
+    implementation("com.google.code.gson:gson:2.11.0")
 
     // Spring Boot benchmark target — in src/test/java, so test scope only
     testImplementation platform('org.springframework.boot:spring-boot-dependencies:3.2.5')

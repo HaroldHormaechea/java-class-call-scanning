@@ -41,6 +41,28 @@ public class ClassFileScanner {
     }
 
     /**
+     * Scans multiple paths and merges results into a single ScanResult.
+     */
+    public ScanResult scanPaths(List<Path> paths) throws IOException {
+        if (paths.size() == 1) {
+            return scanPath(paths.get(0));
+        }
+        CallGraph graph = new CallGraph();
+        SourceIndex sourceIndex = new SourceIndex();
+        FieldAccessIndex fieldAccessIndex = new FieldAccessIndex();
+        TestIndex testIndex = new TestIndex();
+
+        for (Path path : paths) {
+            ScanResult partial = scanPath(path);
+            graph.mergeFrom(partial.callGraph());
+            sourceIndex.mergeFrom(partial.sourceIndex());
+            fieldAccessIndex.mergeFrom(partial.fieldAccessIndex());
+            testIndex.mergeFrom(partial.testIndex());
+        }
+        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex);
+    }
+
+    /**
      * Main entry point — accepts a directory, JAR, WAR, or EAR.
      */
     public ScanResult scanPath(Path dirOrArchive) throws IOException {

@@ -26,6 +26,10 @@ public class TestIndex {
         return Collections.unmodifiableSet(tests.keySet());
     }
 
+    public void mergeFrom(TestIndex other) {
+        other.tests.values().forEach(this::add);
+    }
+
     public int size() {
         return tests.size();
     }
