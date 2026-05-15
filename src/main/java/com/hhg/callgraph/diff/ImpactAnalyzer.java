@@ -14,16 +14,27 @@ public class ImpactAnalyzer {
 
     private final CallGraph callGraph;
     private final SourceIndex sourceIndex;
-    private final Path sourcesRoot;
+    private final List<Path> sourceRoots;
 
     public ImpactAnalyzer(ScanResult scanResult) {
-        this(scanResult, null);
+        this(scanResult, (Path) null);
     }
 
+    /**
+     * Legacy single-root constructor. {@code null} preserves the historical "no roots"
+     * behaviour (paths are passed through verbatim to {@link SourceIndex}); a non-null
+     * path is wrapped as {@code List.of(sourcesRoot)} so the new path-stripping logic
+     * is reused without forking codepaths.
+     */
     public ImpactAnalyzer(ScanResult scanResult, Path sourcesRoot) {
+        this(scanResult, sourcesRoot == null ? List.<Path>of() : List.of(sourcesRoot));
+    }
+
+    /** Canonical multi-root constructor used by the UC01 daemon (one or more {@code --src} roots). */
+    public ImpactAnalyzer(ScanResult scanResult, List<Path> sourceRoots) {
         this.callGraph = scanResult.callGraph();
         this.sourceIndex = scanResult.sourceIndex();
-        this.sourcesRoot = sourcesRoot;
+        this.sourceRoots = sourceRoots == null ? List.<Path>of() : List.copyOf(sourceRoots);
     }
 
     public ImpactResult analyze(List<DiffEntry> diffs) {
@@ -58,12 +69,22 @@ public class ImpactAnalyzer {
     }
 
     /**
-     * When a sources root is configured, strips it from the diff file path so that
-     * {@code src/main/java/com/example/Foo.java} becomes {@code com/example/Foo.java},
-     * enabling an exact package-qualified match in {@link SourceIndex#findMethodsAt}.
+     * Iterates the configured source roots in order; the first root that produces a
+     * stripped result wins. With zero roots configured the path is returned verbatim
+     * (legacy "no sources root" behaviour preserved by the
+     * {@link #ImpactAnalyzer(ScanResult, Path)} delegation with {@code null}).
      */
     private String normalizeDiffPath(String filePath) {
-        if (sourcesRoot == null) return filePath;
+        if (sourceRoots.isEmpty()) return filePath;
+        for (Path root : sourceRoots) {
+            String stripped = stripWithRoot(filePath, root);
+            if (stripped != null) return stripped;
+        }
+        return filePath;
+    }
+
+    private static String stripWithRoot(String filePath, Path sourcesRoot) {
+        if (sourcesRoot == null) return null;
         String normalizedPath = filePath.replace('\\', '/');
         String root = sourcesRoot.toString().replace('\\', '/');
         if (!root.endsWith("/")) root += "/";
@@ -94,6 +115,6 @@ public class ImpactAnalyzer {
             }
         }
 
-        return filePath;
+        return null;
     }
 }

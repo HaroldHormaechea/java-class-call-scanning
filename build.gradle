@@ -20,6 +20,14 @@ dependencies {
     implementation("org.ow2.asm:asm-util:9.8")
     implementation("com.google.code.gson:gson:2.11.0")
 
+    // Anthropic MCP Java SDK — stdio server transport for UC01 daemon.
+    // 1.1.2 is the latest stable release on Maven Central
+    // (newer 2.0.0-M1/-M2 are milestone, not stable, so deliberately not chosen).
+    // Pulls in mcp-core (slf4j-api 2.0.16, jackson-annotations 2.20, reactor-core 3.7.0),
+    // mcp-json-jackson3 (Jackson 3 — tools.jackson.core:jackson-databind:3.0.3),
+    // and com.networknt:json-schema-validator:3.0.0.
+    implementation("io.modelcontextprotocol.sdk:mcp:1.1.2")
+
     // Spring Boot benchmark target — in src/test/java, so test scope only
     testImplementation platform('org.springframework.boot:spring-boot-dependencies:3.2.5')
     testImplementation 'org.springframework.boot:spring-boot-starter-web'

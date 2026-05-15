@@ -119,6 +119,78 @@ public class CallTreePrinter {
     }
 
     // -----------------------------------------------------------------------
+    // UC01 daemon — truncated trees with explicit {truncated, reason} markers
+    // -----------------------------------------------------------------------
+
+    /**
+     * UC01: callee tree, marking depth/cycle truncations as
+     * {@code {"method": "...", "truncated": true, "reason": "depth"|"cycle"}} without a
+     * {@code "children"} key. {@code maxDepth} of -1 is unbounded.
+     *
+     * <p>The {@code method} value uses dotted-class display form; the daemon layer
+     * substitutes JVM-descriptor FQNs at the wire boundary if needed.
+     */
+    public JsonObject buildTruncatedCalleeTreeJson(MethodReference root, int maxDepth) {
+        Set<MethodReference> path = new HashSet<>();
+        path.add(root);
+        return truncatedNode(root, path, 0, maxDepth, true);
+    }
+
+    /** UC01: caller tree variant of {@link #buildTruncatedCalleeTreeJson}. */
+    public JsonObject buildTruncatedCallerTreeJson(MethodReference root, int maxDepth) {
+        Set<MethodReference> path = new HashSet<>();
+        path.add(root);
+        return truncatedNode(root, path, 0, maxDepth, false);
+    }
+
+    private JsonObject truncatedNode(MethodReference node, Set<MethodReference> path,
+                                     int depth, int maxDepth, boolean callees) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("method", node.toDisplayString());
+
+        if (testIndex.isTestMethod(node)) {
+            obj.addProperty("isTest", true);
+            testIndex.getDescriptor(node).ifPresent(desc -> {
+                obj.addProperty("testType", desc.testType());
+                obj.addProperty("testDisplayName", desc.displayName());
+            });
+        }
+
+        if (maxDepth >= 0 && depth >= maxDepth) {
+            obj.addProperty("truncated", true);
+            obj.addProperty("reason", "depth");
+            return obj;
+        }
+
+        Set<MethodReference> neighbours = callees ? graph.getCalleesOf(node) : graph.getCallersOf(node);
+        List<MethodReference> children = neighbours.stream()
+                .filter(m -> !"<classref>".equals(m.getMethodName()))
+                .sorted(Comparator.comparing(MethodReference::toDisplayString))
+                .toList();
+
+        if (children.isEmpty()) {
+            return obj;
+        }
+
+        JsonArray arr = new JsonArray();
+        for (MethodReference child : children) {
+            if (path.contains(child)) {
+                JsonObject cycleNode = new JsonObject();
+                cycleNode.addProperty("method", child.toDisplayString());
+                cycleNode.addProperty("truncated", true);
+                cycleNode.addProperty("reason", "cycle");
+                arr.add(cycleNode);
+            } else {
+                path.add(child);
+                arr.add(truncatedNode(child, path, depth + 1, maxDepth, callees));
+                path.remove(child);
+            }
+        }
+        obj.add("children", arr);
+        return obj;
+    }
+
+    // -----------------------------------------------------------------------
     // Impact caller tree — unlimited depth, cycle-safe, split class/method
     // -----------------------------------------------------------------------
 

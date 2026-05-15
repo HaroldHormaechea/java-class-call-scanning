@@ -10,4 +10,4 @@ Statuses:
 
 | # | File | Title | Status | Updated |
 |---|------|-------|--------|---------|
-| 01 | [use-cases/01-daemon-and-cli-mcp-query-api.md](use-cases/01-daemon-and-cli-mcp-query-api.md) | Daemon + CLI/MCP query API over the call-graph indexes | pending | 2026-05-15 |
+| 01 | [use-cases/01-daemon-and-cli-mcp-query-api.md](use-cases/01-daemon-and-cli-mcp-query-api.md) | Daemon + CLI/MCP query API over the call-graph indexes | done | 2026-05-15 |
