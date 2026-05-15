@@ -173,6 +173,25 @@ class DaemonProcessSpawnE2ETest {
                 "started_at_epoch_millis clock-skew check failed: started="
                         + started + " now=" + now);
 
+        // --- 6b. UC 03 — discovery file's daemon_version must equal project.version ---
+        // Both Daemon.DAEMON_VERSION and McpStdioServer.SERVER_VERSION resolve through
+        // BuildVersion.value(), so seeing project.version round-trip through the
+        // discovery file proves the build-time embedding survived classpath +
+        // child-JVM boot. build.gradle wires project.version into the test JVM via
+        // `test { systemProperty 'project.version', project.version }`, but it is
+        // NOT propagated into the spawned child; the child reads its own embedded
+        // resource. We compare the parent's view of project.version against the
+        // child's reported daemon_version — they must match.
+        String projectVersion = System.getProperty("project.version");
+        Assumptions.assumeTrue(projectVersion != null && !projectVersion.isBlank(),
+                "skipping daemon_version assertion: 'project.version' system "
+                        + "property unset (only present under ./gradlew test)");
+        assertEquals(projectVersion, rec.daemonVersion(),
+                "discovery file daemon_version must match build.gradle project.version "
+                        + "(UC 03 — build-time version embedding). If this fails, the "
+                        + "spawned daemon either picked up a stale resource or fell back "
+                        + "to a hardcoded literal.");
+
         // --- 7. TCP ping ------------------------------------------------------
         // Top-level {"op":"ping"} — missing 'args' is fine; JsonProtocol.parseRequest
         // defaults to an empty JsonObject.

@@ -1,6 +1,7 @@
 package com.hhg.callgraph.daemon;
 
 import com.google.gson.JsonObject;
+import com.hhg.callgraph.BuildVersion;
 import com.hhg.callgraph.daemon.mcp.McpStdioServer;
 import com.hhg.callgraph.daemon.op.OperationResult;
 import com.hhg.callgraph.daemon.op.Operations;
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class Daemon implements ConnectionHandler.TcpOps {
 
-    public static final String DAEMON_VERSION = "1.0-SNAPSHOT";
+    public static final String DAEMON_VERSION = BuildVersion.value();
 
     private final ScopeConfig scope;
     private final Discovery discovery;

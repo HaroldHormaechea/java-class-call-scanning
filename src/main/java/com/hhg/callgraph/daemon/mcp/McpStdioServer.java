@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.hhg.callgraph.BuildVersion;
 import com.hhg.callgraph.daemon.IdleWatchdog;
 import com.hhg.callgraph.daemon.op.OperationResult;
 import com.hhg.callgraph.daemon.op.Operations;
@@ -30,7 +31,7 @@ public final class McpStdioServer implements AutoCloseable {
 
     private static final Gson GSON = new GsonBuilder().create();
     private static final String SERVER_NAME    = "java-class-call-scanning";
-    private static final String SERVER_VERSION = "1.0-SNAPSHOT";
+    private static final String SERVER_VERSION = BuildVersion.value();
 
     private final Operations operations;
     private final IdleWatchdog watchdog;     // nullable

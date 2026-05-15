@@ -61,5 +61,6 @@ The dev-team's path scope is defined by `paths.production` and `paths.test` in `
 - `.github/workflows/**` — GitHub Actions workflow YAML (developer scope).
 - `README.md`, `USAGE.md`, `CHANGELOG.md` — root-level documentation (developer scope).
 - `.gitignore` — repository-level VCS config (developer scope).
+- `src/main/resources/**` — production resources packaged into the JAR alongside compiled classes (developer scope; semantically production code, but `PROJECT_BRIEF.md` frontmatter `paths.production` currently lists only `src/main/java/**` — a future `/revise-brief` should fold this in).
 
 QA may read all of the above but writes only to `paths.test`. Authorization for any new repository-level file outside these patterns must be added here before the dev-team modifies it.
