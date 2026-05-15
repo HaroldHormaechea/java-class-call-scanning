@@ -64,7 +64,7 @@ A debug/validation mode that lets you inspect the call graph and field index int
 Requires Java 21+ and Gradle (wrapper included).
 
 ```bash
-./gradlew build        # compile + package → build/libs/JavaClassCallScanning.jar
+./gradlew build        # compile + package → build/libs/java-class-call-scanning.jar
 ./gradlew test         # run the test suite
 ./gradlew clean build  # full rebuild
 ```
@@ -78,11 +78,11 @@ Test fixtures (including the benchmark app) land in `build/classes/java/test/`.
 
 ### Using the packaged JAR (recommended)
 
-After `./gradlew build`, the self-contained fat JAR is at `build/libs/JavaClassCallScanning.jar`.
+After `./gradlew build`, the self-contained fat JAR is at `build/libs/java-class-call-scanning.jar`.
 Copy it anywhere and run with `java -jar`:
 
 ```bash
-java -jar JavaClassCallScanning.jar --compiled <dir|jar|war> [--compiled <dir|jar|war> ...]
+java -jar java-class-call-scanning.jar --compiled <dir|jar|war> [--compiled <dir|jar|war> ...]
                                     [--sources <srcDir>]
                                     [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>]
                                     [--export-format console|json]
@@ -91,7 +91,7 @@ java -jar JavaClassCallScanning.jar --compiled <dir|jar|war> [--compiled <dir|ja
 `--compiled` can be specified multiple times to scan several directories/archives into a single graph. This is useful for scanning both production and test classes together:
 
 ```bash
-java -jar JavaClassCallScanning.jar \
+java -jar java-class-call-scanning.jar \
   --compiled target/classes \
   --compiled target/test-classes \
   --sources src/main/java \
@@ -194,11 +194,11 @@ PowerShell's `>` operator writes files as UTF-16LE, which differs from the UTF-8
 
 ```powershell
 # Option 1: Pipe directly (recommended — avoids encoding issues entirely)
-git diff HEAD~1..HEAD | java -jar JavaClassCallScanning.jar --compiled build\classes\java\main --sources src\main\java --diff-stdin
+git diff HEAD~1..HEAD | java -jar java-class-call-scanning.jar --compiled build\classes\java\main --sources src\main\java --diff-stdin
 
 # Option 2: Save to file with PowerShell (works — tool detects UTF-16LE)
 git diff HEAD~1..HEAD > changes.patch
-java -jar JavaClassCallScanning.jar --compiled build\classes\java\main --diff changes.patch
+java -jar java-class-call-scanning.jar --compiled build\classes\java\main --diff changes.patch
 
 # Option 3: Force UTF-8 output
 git diff HEAD~1..HEAD | Out-File -Encoding utf8 changes.patch
@@ -217,10 +217,10 @@ cd C:\path\to\spring-framework
 .\gradlew :spring-context:compileJava
 
 # Scan one module
-git diff HEAD~10..HEAD | java -jar JavaClassCallScanning.jar --compiled spring-context\build\classes\java\main --sources spring-context\src\main\java --diff-stdin
+git diff HEAD~10..HEAD | java -jar java-class-call-scanning.jar --compiled spring-context\build\classes\java\main --sources spring-context\src\main\java --diff-stdin
 
 # Scan multiple modules together
-java -jar JavaClassCallScanning.jar --compiled spring-core\build\classes\java\main --compiled spring-context\build\classes\java\main --diff changes.patch
+java -jar java-class-call-scanning.jar --compiled spring-core\build\classes\java\main --compiled spring-context\build\classes\java\main --diff changes.patch
 ```
 
 ### `--print-hierarchy <ref>` — explore the graph interactively

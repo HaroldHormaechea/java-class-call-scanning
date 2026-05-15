@@ -1,0 +1,123 @@
+# Bump the version in build.gradle and push an annotated tag.
+#
+# Triggered manually from the GitHub Actions UI. The optional `version` input
+# overrides the auto-computed value; when blank, the workflow reads the current
+# `version = '...'` line from build.gradle and bumps the minor component
+# (major unchanged, minor +1, patch reset to 0). The first run against the
+# unbumped repo (version = '0.0.0') therefore produces 0.1.0.
+#
+# Prerequisite: the repository secret `RELEASE_PAT` MUST exist. It is a
+# fine-grained PAT scoped to this repo with `contents: write`, used by the
+# checkout step so that the eventual tag push triggers the release workflow.
+# The default `GITHUB_TOKEN` is intentionally blocked from triggering
+# downstream workflows. If RELEASE_PAT is missing, the checkout step fails
+# fast with `Bad credentials` — that is the intended loud failure mode.
+
+name: bump-and-tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Target version in SemVer form (e.g. 1.4.0). Leave blank to auto-bump minor."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-and-tag
+  cancel-in-progress: false
+
+jobs:
+  bump-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Resolve target version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            if ! printf '%s' "${INPUT_VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::Supplied version '${INPUT_VERSION}' is not valid SemVer <major>.<minor>.<patch>. Numeric components only, no prerelease suffixes."
+              exit 1
+            fi
+            NEW_VERSION="${INPUT_VERSION}"
+            echo "Using supplied version: ${NEW_VERSION}"
+          else
+            CURRENT="$(grep -E "^version[[:space:]]*=[[:space:]]*['\"][0-9]+\.[0-9]+\.[0-9]+['\"][[:space:]]*$" build.gradle | sed -E "s/^version[[:space:]]*=[[:space:]]*['\"]([0-9]+\.[0-9]+\.[0-9]+)['\"][[:space:]]*$/\1/")"
+            if [ -z "${CURRENT}" ]; then
+              echo "::error::Could not parse a SemVer version line from build.gradle. Expected a line of the form: version = '<major>.<minor>.<patch>'"
+              exit 1
+            fi
+            MAJOR="${CURRENT%%.*}"
+            REST="${CURRENT#*.}"
+            MINOR="${REST%%.*}"
+            NEW_MINOR=$((MINOR + 1))
+            NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
+            echo "Current version: ${CURRENT}"
+            echo "Computed next minor: ${NEW_VERSION}"
+          fi
+          echo "new_version=${NEW_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${NEW_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Guard against existing tag
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag ${TAG} already exists locally. Refusing to overwrite."
+            exit 1
+          fi
+          if [ -n "$(git ls-remote --tags origin "refs/tags/${TAG}")" ]; then
+            echo "::error::Tag ${TAG} already exists on origin. Refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Rewrite build.gradle
+        env:
+          NEW_VERSION: ${{ steps.resolve.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^(version[[:space:]]*=[[:space:]]*)['\"][0-9]+\.[0-9]+\.[0-9]+['\"]([[:space:]]*)$/\1'${NEW_VERSION}'\2/" build.gradle
+          if git diff --quiet -- build.gradle; then
+            echo "::error::sed did not modify build.gradle — the version line did not match the expected pattern. Aborting."
+            exit 1
+          fi
+          echo "build.gradle now declares version ${NEW_VERSION}:"
+          grep -E "^version[[:space:]]*=" build.gradle
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and tag
+        env:
+          NEW_VERSION: ${{ steps.resolve.outputs.new_version }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git add build.gradle
+          git commit -m "chore: release v${NEW_VERSION}"
+          git tag -a "${TAG}" -m "Release v${NEW_VERSION}"
+
+      - name: Push commit and tag atomically
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git push --atomic origin main "${TAG}"
