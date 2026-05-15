@@ -53,8 +53,29 @@ public final class Discovery {
         return new Discovery(resolveCacheDirectory(), daemonVersion);
     }
 
-    /** Resolves the platform cache directory, creating intermediate dirs lazily. */
+    /**
+     * Resolves the cache directory used for discovery files, creating intermediate dirs lazily.
+     *
+     * <p>If the environment variable {@code CALLGRAPH_DISCOVERY_DIR} is set to a non-blank value,
+     * it is returned verbatim as the final cache directory — the {@code java-class-call-scanning}
+     * suffix is <em>not</em> appended. This override is intended for tests, CI sandboxing, and
+     * multi-user development boxes where the platform-default cache location is unsuitable. When
+     * set, the override fully replaces the platform default rather than supplementing it.
+     *
+     * <p>When the override is not set (or is blank), the platform-specific default is used:
+     * <ul>
+     *   <li>Linux / other Unix: {@code $XDG_CACHE_HOME} if set, otherwise {@code ~/.cache}, with
+     *       {@code java-class-call-scanning} appended.</li>
+     *   <li>macOS: {@code ~/Library/Caches/java-class-call-scanning}.</li>
+     *   <li>Windows: {@code %LOCALAPPDATA%} if set, otherwise {@code %APPDATA%}, otherwise
+     *       {@code %USERPROFILE%\AppData\Local}, with {@code java-class-call-scanning} appended.</li>
+     * </ul>
+     */
     public static Path resolveCacheDirectory() {
+        String override = System.getenv("CALLGRAPH_DISCOVERY_DIR");
+        if (override != null && !override.isBlank()) {
+            return Paths.get(override);
+        }
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         Path base;
         if (os.contains("win")) {
