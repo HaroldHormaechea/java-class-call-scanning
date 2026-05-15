@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.hhg.callgraph.cli.DaemonCli;
+import com.hhg.callgraph.cli.SubcommandParser;
 import com.hhg.callgraph.diff.DiffEntry;
 import com.hhg.callgraph.diff.GitDiffParser;
 import com.hhg.callgraph.diff.ImpactAnalyzer;
@@ -110,6 +112,25 @@ public class CallGraphBuilder {
     }
 
     public static void main(String[] args) throws IOException {
+        // Three-clause top-level dispatch (UC01):
+        //   1. No args             → legacy usage.
+        //   2. Starts with --flag  → legacy path.
+        //   3. Bare token          → DaemonCli, or "did you mean?" error.
+        if (args.length > 0 && !args[0].startsWith("--")) {
+            String first = args[0];
+            if (DaemonCli.recognisedSubcommands().contains(first)) {
+                int code = DaemonCli.dispatch(args);
+                if (code != 0) System.exit(code);
+                return;
+            }
+            String suggestion = SubcommandParser.suggestClosestName(first,
+                    DaemonCli.recognisedSubcommandsAsList());
+            System.err.println("Unknown subcommand: " + first
+                    + (suggestion != null ? ". Did you mean: " + suggestion + "?" : ""));
+            System.exit(2);
+            return;
+        }
+
         CliArgs cli = parseArgs(args);
         if (cli == null) {
             printUsage();
