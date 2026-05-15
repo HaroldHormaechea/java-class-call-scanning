@@ -9,7 +9,7 @@ application {
 }
 
 group = 'com.hhg'
-version = '1.0-SNAPSHOT'
+version = '0.0.0'
 
 repositories {
     mavenCentral()
@@ -39,7 +39,7 @@ dependencies {
 }
 
 shadowJar {
-    archiveBaseName.set('JavaClassCallScanning')
+    archiveBaseName.set('java-class-call-scanning')
     archiveVersion.set('')
     archiveClassifier.set('')
 }

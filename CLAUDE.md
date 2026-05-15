@@ -51,3 +51,15 @@ The project uses ASM 9.8 tree API:
 
 - Scanner.java uses a hardcoded absolute Windows path to locate .class files - needs parameterization for portability
 - Test framework is configured but no tests are implemented yet
+
+## Dev-team write authorizations
+
+The dev-team's path scope is defined by `paths.production` and `paths.test` in `PROJECT_BRIEF.md` frontmatter (`src/main/java/**` and `src/test/java/**`). The following additional paths are authorized for dev-team writes, because they are project-level infrastructure / docs / build config that does not fit those globs but is necessary for normal project work:
+
+- `build.gradle`, `settings.gradle` — build configuration (developer scope).
+- `gradle/wrapper/**`, `gradlew`, `gradlew.bat` — Gradle wrapper (developer scope; typically updated via `./gradlew wrapper --gradle-version <x>` rather than hand-edits).
+- `.github/workflows/**` — GitHub Actions workflow YAML (developer scope).
+- `README.md`, `USAGE.md`, `CHANGELOG.md` — root-level documentation (developer scope).
+- `.gitignore` — repository-level VCS config (developer scope).
+
+QA may read all of the above but writes only to `paths.test`. Authorization for any new repository-level file outside these patterns must be added here before the dev-team modifies it.

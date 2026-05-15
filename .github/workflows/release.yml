@@ -1,0 +1,91 @@
+# Build the fat JAR, run the test suite, and publish a GitHub Release.
+#
+# Triggered automatically when an annotated tag matching v*.*.* is pushed (the
+# bump-and-tag workflow produces these). Tests must pass before the release is
+# created. Two assets are attached: the fat JAR and the in-repo USAGE.md
+# (uploaded verbatim from the tagged commit). The release is marked
+# prerelease while the project lives in 0.x.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Run tests
+        run: ./gradlew test
+
+      - name: Build fat JAR
+        run: ./gradlew shadowJar
+
+      - name: Verify fat JAR exists
+        run: |
+          set -euo pipefail
+          if [ ! -f build/libs/java-class-call-scanning.jar ]; then
+            echo "::error::Expected build/libs/java-class-call-scanning.jar but it was not produced. Found:"
+            ls -la build/libs/ || true
+            exit 1
+          fi
+
+      - name: Compute changelog body
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Empty-tree SHA fallback: covers the first release, when no prior tag exists.
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)"
+          echo "Computing changelog from ${PREV}..${TAG}"
+          # Squash-merge commits are single-parent (not real merges); --no-merges keeps them, so each
+          # squash-merged PR yields exactly one bullet. Trailing "(#123)" PR-number suffixes are stripped.
+          {
+            git log "${PREV}..${TAG}" --pretty=format:'%s' --no-merges \
+              | sed -E 's/[[:space:]]*\(#[0-9]+\)[[:space:]]*$//' \
+              | sed -E 's/^/- /'
+            # git log --pretty=format does not emit a trailing newline; ensure the file ends with one.
+            echo
+          } > release-notes.md
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+          echo "----------------------------"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "${TAG}" \
+            --prerelease \
+            --title "${TAG}" \
+            --notes-file release-notes.md \
+            "build/libs/java-class-call-scanning.jar" \
+            "USAGE.md"
