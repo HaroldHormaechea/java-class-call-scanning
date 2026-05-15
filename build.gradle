@@ -50,6 +50,14 @@ jar.enabled = false
 // Make ./gradlew build produce the fat JAR
 assemble.dependsOn shadowJar
 
+processResources {
+    inputs.property('projectVersion', project.version)
+    filesMatching('com/hhg/callgraph/build-version.properties') {
+        expand([version: project.version])
+    }
+}
+
 test {
     useJUnitPlatform()
+    systemProperty 'project.version', project.version.toString()
 }
