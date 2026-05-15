@@ -1,70 +1,29 @@
-# Java Call Graph Scanner
+# java-class-call-scanning
 
-A bytecode analysis tool that builds a method-level call graph and field access index from compiled Java `.class` files. Its primary goal is **selective test execution**: given a Git diff, identify which methods changed, trace all transitive callers, and determine which tests need to run.
+Bytecode-level Java call-graph and diff-impact analyzer. Reads compiled `.class` files, JARs, and WARs (including nested `WEB-INF/lib/*.jar`) with ASM, builds a method-level call graph plus a field read/write index, maps a Git unified diff onto the methods it touches via the bytecode `LineNumberTable`, and walks the graph backward to find the transitive callers — flagging the ones that are JUnit 5 or Spock test methods.
 
----
+## What it does
 
-## Goal
+The tool is the same fat JAR in three usage modes:
 
-1. Scan compiled `.class` files to build a method-level call hierarchy and a field read/write index
-2. Parse a Git diff to identify which source lines changed
-3. Map changed lines back to method bodies using bytecode debug info
-4. Walk the call graph backward to find every caller that is transitively affected
-5. Identify which callers are test methods (JUnit 5, Spock) and output them for selective test execution
+1. **One-shot CLI** — pass `--compiled <paths>` and either `--diff <file>` / `--diff-stdin` (impact analysis) or `--print-hierarchy <ref>` (interactive exploration). Reads bytecode, prints results, exits.
+2. **Daemon — TCP loopback CLI** — `daemon start` launches a long-lived process scoped to a project (classpath + sources). The same JAR run with a query subcommand (`find-callers`, `tests-for-diff`, …) talks to the daemon over a per-user loopback port and prints the JSON response. The indexes are built once and reused across queries.
+3. **Daemon — MCP stdio server** — the daemon also speaks MCP on stdio, advertising nine tools (`refresh-index`, `find-callers`, `find-callees`, `methods-in-class`, `methods-at-line`, `find-field-readers`, `find-field-writers`, `impact-of-diff`, `tests-for-diff`). An MCP-aware client (e.g. an LLM agent) drives the same operations as tools.
 
----
+The primary use case is selective test execution in CI: feed a pull-request diff to `tests-for-diff` (or `--diff` in one-shot mode) and run only the test classes/methods the tool reports as impacted. Secondary use cases are interactive exploration via `--print-hierarchy` and programmatic call-graph queries from an MCP client.
 
-## Current capabilities
+The tool reads only — it never executes the analyzed code, never instruments it, and never makes network calls.
 
-### Call graph
+## Requirements
 
-Every method invocation (`INVOKEVIRTUAL`, `INVOKESPECIAL`, `INVOKESTATIC`, `INVOKEINTERFACE`) is recorded as a directed edge `caller → callee`. The graph supports:
-
-- Direct callee/caller lookup
-- Full transitive traversal in both directions (cycle-safe BFS)
-
-### Field access index
-
-Every field access instruction is recorded as a read (`GETFIELD`/`GETSTATIC`) or a write (`PUTFIELD`/`PUTSTATIC`), indexed by the accessing method. You can look up all readers, all writers, or both for any field.
-
-### Source location metadata
-
-Bytecode debug information (`LineNumberTable`) is used to record the line range of every method body. This bridges Git diff line numbers to `MethodReference` keys so impact analysis works without parsing source files.
-
-### Test method detection
-
-The scanner detects test methods via bytecode annotations:
-
-- **JUnit 5** — `@Test`, `@ParameterizedTest`, `@TestFactory`, `@RepeatedTest`, `@TestTemplate`
-- **Spock** — `@FeatureMetadata`
-
-Detected tests are indexed and surfaced in JSON output with `isTest`, `testType`, and `testDisplayName` fields.
-
-### Git diff impact analysis
-
-Given a unified diff (file or stdin), the tool:
-
-1. Parses added/changed lines per file
-2. Finds methods whose line range contains any changed line
-3. Builds full caller trees (unlimited depth, cycle-safe) rooted at each changed method
-4. Marks every node that is a test method
-
-In **console** mode, outputs two flat lists: directly changed methods and transitive callers.
-
-In **JSON** mode, outputs `impactedTrees` — full caller hierarchy trees rooted at each directly changed method, with `isTest` markers on test nodes. This is the primary output for selective test execution.
-
-### Interactive hierarchy explorer (`--print-hierarchy`)
-
-A debug/validation mode that lets you inspect the call graph and field index interactively.
-
----
+- JDK 21+ (any LTS distribution: Temurin, Zulu, Liberica, Oracle, etc.).
+- The Gradle wrapper (`./gradlew`) is checked into the repo — no separate Gradle install needed.
+- ASM 9.8 and Gson 2.11.0 are bundled in the fat JAR; no other runtime dependencies.
 
 ## Building
 
-Requires Java 21+ and Gradle (wrapper included).
-
 ```bash
-./gradlew build        # compile + package → build/libs/java-class-call-scanning.jar
+./gradlew build        # compile + package → build/libs/java-class-call-scanning.jar (fat JAR)
 ./gradlew test         # run the test suite
 ./gradlew clean build  # full rebuild
 ```
@@ -72,23 +31,18 @@ Requires Java 21+ and Gradle (wrapper included).
 The tool's compiled classes land in `build/classes/java/main/`.
 Test fixtures (including the benchmark app) land in `build/classes/java/test/`.
 
----
+## One-shot CLI
 
-## Running
-
-### Using the packaged JAR (recommended)
-
-After `./gradlew build`, the self-contained fat JAR is at `build/libs/java-class-call-scanning.jar`.
-Copy it anywhere and run with `java -jar`:
+After `./gradlew build`, the self-contained fat JAR is at `build/libs/java-class-call-scanning.jar`. Releases attach the same artifact under that name. Copy it anywhere and run with `java -jar`:
 
 ```bash
-java -jar java-class-call-scanning.jar --compiled <dir|jar|war> [--compiled <dir|jar|war> ...]
-                                    [--sources <srcDir>]
-                                    [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>]
-                                    [--export-format console|json]
+java -jar java-class-call-scanning.jar --compiled <dir|jar|war> [--compiled <dir|jar|war> ...] \
+                                       [--sources <srcDir>] \
+                                       [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>] \
+                                       [--export-format console|json]
 ```
 
-`--compiled` can be specified multiple times to scan several directories/archives into a single graph. This is useful for scanning both production and test classes together:
+`--compiled` can be specified multiple times to scan several directories/archives into a single graph. Typical: scan both production and test classes together so the diff's transitive callers include test methods.
 
 ```bash
 java -jar java-class-call-scanning.jar \
@@ -99,16 +53,18 @@ java -jar java-class-call-scanning.jar \
   --export-format json
 ```
 
-### Using Gradle (development / in-repo)
+In-repo equivalent via Gradle:
 
-```
-./gradlew run --args="--compiled <dir|jar|war> [--compiled <dir|jar|war> ...]
-                      [--sources <srcDir>]
-                      [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>]
+```bash
+./gradlew run --args="--compiled <dir|jar|war> [--compiled <dir|jar|war> ...] \
+                      [--sources <srcDir>] \
+                      [--diff <diffFile> | --diff-stdin | --print-hierarchy <ref>] \
                       [--export-format console|json]"
 ```
 
 ### Default — dump all edges
+
+With no `--diff` / `--diff-stdin` / `--print-hierarchy` flag, the tool prints method count, edge count, source index size, then every `caller → callee` edge.
 
 ```bash
 # Scan the bundled benchmark fixtures (compiled to test output)
@@ -117,27 +73,22 @@ java -jar java-class-call-scanning.jar \
 # Scan your own project's compiled output
 ./gradlew run --args="--compiled /path/to/your/project/build/classes/java/main"
 
-# Scan a WAR file
+# Scan a WAR file (incl. nested WEB-INF/lib/*.jar)
 ./gradlew run --args="--compiled /path/to/app.war"
 
 # Scan a JAR
 ./gradlew run --args="--compiled /path/to/library.jar"
 ```
 
-Prints method count, edge count, source index size, then every `caller → callee` edge.
-
-### `--diff <diffFile>` — impact analysis from a file
+### `--diff <diffFile>` / `--diff-stdin` — impact analysis
 
 ```bash
 ./gradlew run --args="--compiled build/classes/java/test --diff path/to/changes.diff"
 
 # With --sources for exact path matching (eliminates same-simple-name ambiguity)
 ./gradlew run --args="--compiled build/classes/java/test --sources src/test/java --diff path/to/changes.diff"
-```
 
-### `--diff-stdin` — impact analysis from stdin
-
-```bash
+# From stdin
 git diff HEAD~1 | ./gradlew -q run --args="--compiled build/classes/java/test --sources src/main/java --diff-stdin"
 ```
 
@@ -155,7 +106,7 @@ org.example.Controller#handleRequest
 
 #### JSON output (`--export-format json`)
 
-Produces `impactedTrees` — full caller hierarchy trees rooted at each directly changed method, with unlimited depth and cycle detection:
+`impactedTrees` — full caller hierarchy trees rooted at each directly changed method, unlimited depth, cycle-safe:
 
 ```json
 {
@@ -186,30 +137,30 @@ Produces `impactedTrees` — full caller hierarchy trees rooted at each directly
 }
 ```
 
-Nodes that form a cycle are marked with `"cycle": true` and have no children.
+Nodes that form a cycle are marked `"cycle": true` and have no children.
 
 #### Windows / PowerShell notes
 
-PowerShell's `>` operator writes files as UTF-16LE, which differs from the UTF-8 that Git normally produces. The tool handles this automatically, but you can also use any of these approaches:
+PowerShell's `>` operator writes files as UTF-16LE, which differs from Git's UTF-8 default. The diff parser detects UTF-8, UTF-16LE/BE, and BOM-prefixed files, so the following all work:
 
 ```powershell
-# Option 1: Pipe directly (recommended — avoids encoding issues entirely)
+# Pipe directly (recommended — avoids encoding issues entirely)
 git diff HEAD~1..HEAD | java -jar java-class-call-scanning.jar --compiled build\classes\java\main --sources src\main\java --diff-stdin
 
-# Option 2: Save to file with PowerShell (works — tool detects UTF-16LE)
+# Save to file with PowerShell (UTF-16LE is detected)
 git diff HEAD~1..HEAD > changes.patch
 java -jar java-class-call-scanning.jar --compiled build\classes\java\main --diff changes.patch
 
-# Option 3: Force UTF-8 output
+# Force UTF-8 output
 git diff HEAD~1..HEAD | Out-File -Encoding utf8 changes.patch
 
-# Option 4: Use cmd for redirection (writes plain ASCII/UTF-8)
+# Use cmd for redirection (writes plain ASCII/UTF-8)
 cmd /c "git diff HEAD~1..HEAD > changes.patch"
 ```
 
-#### Multi-module projects (e.g., Spring Framework)
+#### Multi-module projects (Gradle/Maven)
 
-For multi-module Gradle/Maven projects, you can point `--compiled` at the specific module or pass multiple paths:
+Point `--compiled` at a specific module or pass multiple paths into one graph:
 
 ```powershell
 # Compile a single module
@@ -223,7 +174,7 @@ git diff HEAD~10..HEAD | java -jar java-class-call-scanning.jar --compiled sprin
 java -jar java-class-call-scanning.jar --compiled spring-core\build\classes\java\main --compiled spring-context\build\classes\java\main --diff changes.patch
 ```
 
-### `--print-hierarchy <ref>` — explore the graph interactively
+### `--print-hierarchy <ref>` — explore the graph
 
 `<ref>` is a dotted fully-qualified name, optionally with a `#memberName` suffix.
 
@@ -284,26 +235,122 @@ Written by (2):
 
 If the name resolves as both a method and a field, both sections are printed.
 
----
+## Daemon mode
+
+The daemon scans the configured classpath + sources once, holds the indexes in memory, and exposes them through two surfaces simultaneously: a TCP loopback CLI (same JAR, query subcommands) and an MCP stdio server.
+
+### Starting and stopping
+
+```bash
+java -jar java-class-call-scanning.jar daemon start \
+    --classpath <dir|jar|war> [--classpath ...] \
+    [--src <srcDir>] [--src ...] \
+    [--include <glob>] [--exclude <glob>] \
+    [--idle-timeout <minutes>] \
+    [--foreground]
+
+java -jar java-class-call-scanning.jar daemon stop --project <id-or-path>
+```
+
+`--classpath` is required and repeatable. `--src` is optional and repeatable. `--include` / `--exclude` filter the scan. `--idle-timeout <minutes>` (≥ 1) triggers auto-shutdown after that many idle minutes; without it, the daemon runs until stopped. `--foreground` keeps the daemon attached to the launching process (required by MCP clients that spawn the daemon as a subprocess).
+
+On startup the daemon writes a **discovery file** containing the PID and the loopback port:
+
+- Linux / other Unix: `$XDG_CACHE_HOME/java-class-call-scanning/<project-hash>.json`, falling back to `~/.cache/java-class-call-scanning/<project-hash>.json` when `XDG_CACHE_HOME` is unset.
+- macOS: `~/Library/Caches/java-class-call-scanning/<project-hash>.json`.
+- Windows: `%LOCALAPPDATA%\java-class-call-scanning\<project-hash>.json`.
+
+The per-project hash is derived from the canonical classpath + source roots, so two daemons launched from different scopes do not collide.
+
+`daemon stop` reads the discovery file and sends a clean shutdown request. `SIGTERM` is also handled gracefully.
+
+### TCP loopback CLI — query subcommands
+
+Once a daemon is running, query it with the same JAR. Each query subcommand takes `--project <id-or-path>` (either the per-project hash from the discovery filename, or any path that resolves to the same scope as the daemon's classpath) and operation-specific flags.
+
+| Subcommand              | Flags                                                  | Purpose                                                                                 |
+|-------------------------|--------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `refresh-index`         | `--project`                                            | Re-scan the daemon's original launch scope and atomically swap the index.               |
+| `find-callers`          | `--project`, `--method`, `[--depth]`                   | BFS over the call graph from a method FQN, returning callers (default depth unbounded). |
+| `find-callees`          | `--project`, `--method`, `[--depth]`                   | BFS over the call graph from a method FQN, returning callees (default depth 3).         |
+| `methods-in-class`      | `--project`, `--class`                                 | List methods declared on a dotted class FQN.                                            |
+| `methods-at-line`       | `--project`, `--source-file`, `--line`                 | Methods whose `LineNumberTable` covers a given `(source_file, line)`.                   |
+| `find-field-readers`    | `--project`, `--field`                                 | Methods that READ a given field FQN (JVM-descriptor form).                              |
+| `find-field-writers`    | `--project`, `--field`                                 | Methods that WRITE a given field FQN (JVM-descriptor form).                             |
+| `impact-of-diff`        | `--project`, `--diff <file>` \| `--diff-stdin`         | Parse a unified diff and emit the `impactedTrees` payload.                              |
+| `tests-for-diff`        | `--project`, `--diff <file>` \| `--diff-stdin`         | Flat list of impacted tests `{fqn, type, displayName, root_change}` for a unified diff. |
+
+**FQN format:**
+
+- Method FQNs use JVM-descriptor form: `pkg.Cls#name(Ldesc;)Ret` (e.g. `org.example.Foo#bar(Ljava/lang/String;)V`).
+- Field FQNs use: `pkg.Cls#name:Ldesc;` (e.g. `org.example.Foo#count:I`).
+- `<init>` and `<clinit>` are queryable by their reserved names.
+
+**Examples:**
+
+```bash
+# Start a daemon scoped to a project
+java -jar java-class-call-scanning.jar daemon start \
+    --classpath build/classes/java/main \
+    --classpath build/classes/java/test \
+    --src src/main/java --src src/test/java
+
+# Find callers of a specific method
+java -jar java-class-call-scanning.jar find-callers \
+    --project /absolute/path/to/project \
+    --method 'org.example.Service#doWork()V'
+
+# Tests impacted by the current diff (piped)
+git diff main...HEAD | java -jar java-class-call-scanning.jar tests-for-diff \
+    --project /absolute/path/to/project --diff-stdin
+
+# Stop the daemon
+java -jar java-class-call-scanning.jar daemon stop --project /absolute/path/to/project
+```
+
+All query subcommands return JSON on stdout. Errors return `{"error": "...", "kind": "<bad-request|not-found|...>"}` with a non-zero exit code.
+
+### MCP stdio server
+
+The daemon also speaks MCP on its stdio. The server identifies itself as `java-class-call-scanning` and advertises the nine tools listed above (same names, same payload shapes).
+
+To connect: configure an MCP-aware client (e.g. an LLM agent) to launch the daemon as a subprocess with `--foreground`, so the process stays attached to the client for the duration of the session. Most MCP client configs accept a command + args; point it at the fat JAR with `daemon start --foreground --classpath ... --src ...` and the nine tools become callable through the client's standard tool-use interface.
 
 ## Project layout
 
 ```
 src/
-├── main/java/com/hhg/callgraph/   ← the tool itself
-│   ├── model/                     # CallGraph, MethodReference, FieldReference, SourceIndex, TestIndex, ...
-│   ├── scanner/                   # ClassFileScanner, ScanResult
-│   │   └── test/                  # JUnit5TestDetector, SpockTestDetector, TestMethodDetector
-│   ├── diff/                      # GitDiffParser, ImpactAnalyzer, ImpactResult
-│   ├── output/                    # CallTreePrinter
-│   └── CallGraphBuilder.java      # main entry point + CLI
+├── main/java/com/hhg/callgraph/
+│   ├── BuildVersion.java           # version constant embedded at build time
+│   ├── CallGraphBuilder.java       # one-shot CLI entry point
+│   ├── cli/                        # daemon + query subcommand dispatch
+│   │   ├── DaemonCli.java
+│   │   └── SubcommandParser.java
+│   ├── model/                      # CallGraph, MethodReference, FieldReference, SourceIndex, TestIndex, ...
+│   ├── scanner/                    # ClassFileScanner, ScanResult
+│   │   └── test/                   # JUnit5TestDetector, SpockTestDetector, TestMethodDetector, TestSelector
+│   ├── diff/                       # GitDiffParser, ImpactAnalyzer, ImpactResult, DiffEntry
+│   ├── output/                     # CallTreePrinter (console + JSON)
+│   └── daemon/                     # long-lived per-project process
+│       ├── Daemon.java             # lifecycle, scope hashing, idle watchdog wiring
+│       ├── Discovery.java          # per-OS cache dir + discovery-file read/write
+│       ├── ScopeConfig.java        # canonical classpath + sources fingerprint
+│       ├── IndexSnapshot.java      # atomic swap of CallGraph/SourceIndex/etc.
+│       ├── RebuildCoordinator.java # refresh-index orchestration
+│       ├── ScanMeta.java
+│       ├── Daemonization.java      # background-launch helper
+│       ├── IdleWatchdog.java
+│       ├── Fqn.java                # FQN parsing for method/field references
+│       ├── op/                     # Operations (one method per query), OperationResult, TestTypeMapping
+│       ├── tcp/                    # TcpServer, ConnectionHandler, JsonProtocol
+│       └── mcp/McpStdioServer.java # MCP server exposing the nine operations as tools
 └── test/java/com/hhg/
-    ├── callgraph/                 ← unit & integration tests
-    ├── main/targets/              ← minimal 3-class call-chain fixture (TargetClass1/2/3)
-    └── benchmark/                 ← realistic Spring Boot fixture (10 entities/services/controllers)
+    ├── callgraph/                  # unit & integration tests for the tool itself
+    ├── main/targets/               # minimal 3-class call-chain fixture (TargetClass1/2/3)
+    └── benchmark/                  # realistic Spring Boot fixture (10 entities/services/controllers)
 ```
 
-### Tool classes (`com.hhg.callgraph`)
+### Key classes
 
 | Class | Package | Role |
 |-------|---------|------|
@@ -316,25 +363,37 @@ src/
 | `TestIndex` | `model` | `MethodReference → TestDescriptor`, tracks which methods are tests |
 | `TestDescriptor` | `model` | Record: method + testType + displayName |
 | `ScanResult` | `scanner` | Record: `(CallGraph, SourceIndex, FieldAccessIndex, TestIndex)` |
-| `ClassFileScanner` | `scanner` | Scans directories, JARs, and WARs (incl. nested `WEB-INF/lib/*.jar`); populates all four indexes. Supports scanning multiple paths via `scanPaths()`. |
+| `ClassFileScanner` | `scanner` | Scans directories, JARs, and WARs (incl. nested `WEB-INF/lib/*.jar`); populates all four indexes |
 | `JUnit5TestDetector` | `scanner.test` | Detects `@Test`, `@ParameterizedTest`, `@TestFactory`, `@RepeatedTest`, `@TestTemplate` |
 | `SpockTestDetector` | `scanner.test` | Detects `@FeatureMetadata` (Spock framework) |
-| `GitDiffParser` | `diff` | Parses unified diff → `List<DiffEntry>`. Handles UTF-8, UTF-16LE/BE, and BOM-prefixed files. |
-| `ImpactAnalyzer` | `diff` | Produces `ImpactResult` from `ScanResult` + diffs; accepts optional sources root. Handles relative-to-absolute path matching for multi-module projects. |
+| `GitDiffParser` | `diff` | Parses unified diff → `List<DiffEntry>`. Handles UTF-8, UTF-16LE/BE, and BOM-prefixed files |
+| `ImpactAnalyzer` | `diff` | Produces `ImpactResult` from `ScanResult` + diffs; accepts optional sources root |
 | `ImpactResult` | `diff` | `directlyChanged` + `transitiveCallers` (disjoint sets) |
-| `CallTreePrinter` | `output` | Console pipe-tree printer + JSON tree builder (callee/caller/impact modes). Cycle-safe with `isTest` annotation on nodes. |
-| `CallGraphBuilder` | (root) | Main entry point + CLI dispatch. Uses Gson for pretty-printed JSON output. |
+| `CallTreePrinter` | `output` | Console pipe-tree printer + JSON tree builder (callee/caller/impact modes), cycle-safe with `isTest` annotation |
+| `CallGraphBuilder` | (root) | One-shot CLI entry point; delegates to `DaemonCli` when the first arg is a daemon subcommand token |
+| `DaemonCli` | `cli` | Dispatches `daemon start` / `daemon stop` and all nine query subcommands |
+| `Daemon` | `daemon` | In-process lifecycle: scan, index-snapshot swap, TCP + MCP server startup, idle shutdown |
+| `Discovery` | `daemon` | Per-OS cache directory resolution and discovery-file read/write |
+| `Operations` | `daemon.op` | The nine query operations, each producing a JSON-serializable `OperationResult` |
+| `TcpServer` / `ConnectionHandler` / `JsonProtocol` | `daemon.tcp` | Loopback TCP transport for the query subcommands |
+| `McpStdioServer` | `daemon.mcp` | MCP stdio transport exposing the nine operations as tools |
 
-### Dependencies
+### Runtime dependencies
 
 | Library | Version | Purpose |
 |---------|---------|---------|
-| ASM | 9.8 | Bytecode reading (ClassReader, ClassNode, MethodNode, MethodInsnNode) |
+| ASM | 9.8 | Bytecode reading (`ClassReader`, `ClassNode`, `MethodNode`, `MethodInsnNode`) |
 | Gson | 2.11.0 | JSON serialization with pretty-printing |
+| MCP Java SDK | (bundled) | MCP server primitives for the stdio surface |
 
----
+## Known limitations
 
-## Out of scope
+- **Reflection-based calls are not tracked.** Dynamic dispatch via `Method.invoke()`, `MethodHandle.invokeExact()`, proxy classes, and similar runtime-resolved targets do not appear in the call graph.
+- **No virtual-dispatch resolution.** Calls are recorded at the declared call site only — there is no Class Hierarchy Analysis (CHA), Rapid Type Analysis (RTA), or points-to analysis to enumerate concrete implementations a virtual call could reach. `interface.method()` records an edge to the interface method, not to every concrete override.
+- **No source-level (AST) analysis.** The tool reads bytecode only. Anything erased by `javac` (lambda capture details, generic type parameters, source-only annotations) is unavailable.
+- **Test detection covers JUnit 5 and Spock only.** JUnit 4 (`@org.junit.Test`), TestNG, Cucumber, and other frameworks are not currently flagged as tests.
+- **Single-threaded scan and analysis.** ASM visits and graph walks run on the launching thread. Large multi-module codebases (e.g. Spring Framework-scale) scan in seconds-to-low-minutes on a developer laptop, but there is no parallelism inside the scanner today.
 
-- **Reflection-based calls** — dynamic dispatch via `Method.invoke()` is not tracked
-- **Runtime polymorphism** — virtual dispatch is recorded at the declared call site only; no CHA/RTA
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE).
