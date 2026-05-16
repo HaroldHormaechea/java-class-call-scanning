@@ -13,4 +13,4 @@ Statuses:
 | 01 | [use-cases/01-daemon-and-cli-mcp-query-api.md](use-cases/01-daemon-and-cli-mcp-query-api.md) | Daemon + CLI/MCP query API over the call-graph indexes | done | 2026-05-15 |
 | 02 | [use-cases/02-build-and-release-pipeline.md](use-cases/02-build-and-release-pipeline.md) | Build & release pipeline via GitHub Actions | done | 2026-05-15 |
 | 03 | [use-cases/03-embed-build-version-at-runtime.md](use-cases/03-embed-build-version-at-runtime.md) | Embed build version into runtime constants | done | 2026-05-15 |
-| 04 | [use-cases/04-auto-watch-incremental-rebuild.md](use-cases/04-auto-watch-incremental-rebuild.md) | Auto-watch and incremental rebuild of the in-memory index | pending | 2026-05-16 |
+| 04 | [use-cases/04-auto-watch-incremental-rebuild.md](use-cases/04-auto-watch-incremental-rebuild.md) | Auto-watch and incremental rebuild of the in-memory index | done | 2026-05-16 |

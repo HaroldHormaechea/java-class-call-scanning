@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -49,25 +50,52 @@ public final class Operations {
         JsonObject rescan();
     }
 
+    /** Source of the {@code watcher-status} payload (UC04 AC #14). */
+    public interface WatcherStatusProvider {
+        JsonObject watcherStatus();
+    }
+
     public static final List<String> USER_FACING_OPS = List.of(
             "refresh-index",
             "find-callers", "find-callees",
             "methods-in-class", "methods-at-line",
             "find-field-readers", "find-field-writers",
-            "impact-of-diff", "tests-for-diff"
+            "impact-of-diff", "tests-for-diff",
+            "watcher-status"
     );
 
     private final Supplier<IndexSnapshot> snapshotSupplier;
     private final Refresher refresher;
+    private final WatcherStatusProvider watcherStatusProvider;   // nullable
+    private final BooleanSupplier restartInProgress;             // nullable
 
     public Operations(Supplier<IndexSnapshot> snapshotSupplier, Refresher refresher) {
+        this(snapshotSupplier, refresher, null, null);
+    }
+
+    public Operations(Supplier<IndexSnapshot> snapshotSupplier,
+                      Refresher refresher,
+                      WatcherStatusProvider watcherStatusProvider,
+                      BooleanSupplier restartInProgress) {
         this.snapshotSupplier = snapshotSupplier;
         this.refresher = refresher;
+        this.watcherStatusProvider = watcherStatusProvider;
+        this.restartInProgress = restartInProgress;
     }
 
     /** Dispatches by op name. Returns Failure with {@code unknown-op} for unknown names. */
     public OperationResult dispatch(String op, JsonObject args) {
         if (op == null) return OperationResult.error("bad-request", "missing 'op' field");
+        // Short-circuit non-status ops while a self-restart is mid-flight (UC04 §6).
+        if (restartInProgress != null && restartInProgress.getAsBoolean()) {
+            switch (op) {
+                case "ping", "shutdown", "watcher-status" -> { /* allow through */ }
+                default -> {
+                    return OperationResult.error("restart-in-progress",
+                            "daemon is restarting; retry shortly");
+                }
+            }
+        }
         try {
             return switch (op) {
                 case "refresh-index"      -> refreshIndex();
@@ -79,6 +107,7 @@ public final class Operations {
                 case "find-field-writers" -> findFieldWriters(args);
                 case "impact-of-diff"     -> impactOfDiff(args);
                 case "tests-for-diff"     -> testsForDiff(args);
+                case "watcher-status"     -> watcherStatus();
                 default                   -> OperationResult.error("unknown-op",
                         "unknown op: " + op);
             };
@@ -87,6 +116,14 @@ public final class Operations {
         } catch (BadArgumentException e) {
             return OperationResult.error("bad-request", e.getMessage());
         }
+    }
+
+    private OperationResult watcherStatus() {
+        if (watcherStatusProvider == null) {
+            return OperationResult.error("watcher-unavailable",
+                    "this daemon was not configured with a watcher-status provider");
+        }
+        return OperationResult.ok(watcherStatusProvider.watcherStatus());
     }
 
     // -----------------------------------------------------------------------

@@ -37,4 +37,17 @@ public class TestIndex {
     public static TestIndex empty() {
         return new TestIndex();
     }
+
+    /** Deep copy used by the incremental rebuild path. */
+    public TestIndex copy() {
+        TestIndex clone = new TestIndex();
+        clone.tests.putAll(this.tests);
+        return clone;
+    }
+
+    /** Removes every test whose method belongs to the given internal class. */
+    public void removeClass(String internalClassName) {
+        if (internalClassName == null) return;
+        tests.keySet().removeIf(m -> internalClassName.equals(m.getClassName()));
+    }
 }

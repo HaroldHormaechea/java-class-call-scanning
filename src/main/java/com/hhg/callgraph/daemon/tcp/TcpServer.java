@@ -94,10 +94,21 @@ public final class TcpServer implements AutoCloseable {
 
     /** Stops accepting + tries to drain handlers for {@code graceSeconds}. */
     public void shutdown(int graceSeconds) {
+        shutdownWithMs(graceSeconds * 1000L);
+    }
+
+    /**
+     * Stops accepting + tries to drain handlers for {@code graceMs} milliseconds; after
+     * the deadline, force-closes remaining handlers via
+     * {@link java.util.concurrent.ExecutorService#shutdownNow()}. Used by the
+     * self-restart pipeline (UC04 §6) which needs sub-second precision.
+     */
+    public void shutdownWithMs(long graceMs) {
         stopAccepting();
         executor.shutdown();
         try {
-            if (!executor.awaitTermination(graceSeconds, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!executor.awaitTermination(Math.max(0L, graceMs),
+                    java.util.concurrent.TimeUnit.MILLISECONDS)) {
                 executor.shutdownNow();
             }
         } catch (InterruptedException e) {

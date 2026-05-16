@@ -21,11 +21,18 @@ import java.util.Map;
 import java.util.function.BiFunction;
 
 /**
- * MCP stdio server exposing the nine user-facing operations as MCP tools.
+ * MCP stdio server exposing the ten user-facing operations as MCP tools.
  *
  * <p><strong>Critical:</strong> when this server is running, daemon logs MUST go to
  * {@link System#err}; {@code System.out} is reserved for the MCP protocol stream.
  * The {@link Operations} façade and other daemon components already obey this rule.
+ *
+ * <p><b>Self-restart contract (UC04 §6):</b> the {@link McpSyncServer} and its
+ * underlying {@link StdioServerTransportProvider} live for the whole JVM. On a
+ * graceful self-restart, the daemon rebuilds {@link Operations} (new index, new
+ * supplier closures) and calls {@link #setOperations(Operations)} to re-point the
+ * tool handlers — the MCP client's stdio session is preserved, no protocol
+ * renegotiation, and the tool surface (names + schemas) is identical.
  */
 public final class McpStdioServer implements AutoCloseable {
 
@@ -33,12 +40,12 @@ public final class McpStdioServer implements AutoCloseable {
     private static final String SERVER_NAME    = "java-class-call-scanning";
     private static final String SERVER_VERSION = BuildVersion.value();
 
-    private final Operations operations;
+    private volatile Operations currentOperations;
     private final IdleWatchdog watchdog;     // nullable
     private final McpSyncServer mcpServer;
 
     public McpStdioServer(Operations operations, IdleWatchdog watchdog) {
-        this.operations = operations;
+        this.currentOperations = operations;
         this.watchdog = watchdog;
 
         StdioServerTransportProvider transport = new StdioServerTransportProvider(
@@ -72,7 +79,10 @@ public final class McpStdioServer implements AutoCloseable {
                         schemaSingleString("diff_text", "Unified Git diff as text")),
                 tool("tests-for-diff",
                         "Flat list of impacted tests {fqn, type, displayName, root_change} for the unified diff in {diff_text}.",
-                        schemaSingleString("diff_text", "Unified Git diff as text"))
+                        schemaSingleString("diff_text", "Unified Git diff as text")),
+                tool("watcher-status",
+                        "Returns the current state of the auto-watch subsystem and the single-source-of-truth payload for 'when was the index last touched'. Includes manual refresh-index calls.",
+                        schemaEmpty())
         );
 
         this.mcpServer = McpServer.sync(transport)
@@ -80,6 +90,14 @@ public final class McpStdioServer implements AutoCloseable {
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(false).build())
                 .tools(tools)
                 .build();
+    }
+
+    /**
+     * Atomically swaps the underlying {@link Operations}. Used by the graceful
+     * self-restart pipeline so the MCP client's stdio session survives the restart.
+     */
+    public void setOperations(Operations newOps) {
+        this.currentOperations = newOps;
     }
 
     /** Closes the MCP server, draining stdio cleanly. */
@@ -120,7 +138,7 @@ public final class McpStdioServer implements AutoCloseable {
         if (watchdog != null) watchdog.bump();
 
         JsonObject args = mapToJsonObject(request.arguments());
-        OperationResult result = operations.dispatch(op, args);
+        OperationResult result = currentOperations.dispatch(op, args);
 
         JsonObject envelope = new JsonObject();
         if (result instanceof OperationResult.Success s) {

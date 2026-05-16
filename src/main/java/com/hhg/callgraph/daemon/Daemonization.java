@@ -29,7 +29,9 @@ public final class Daemonization {
                                                           List<String> originalArgs)
             throws IOException {
         discovery.ensureDirectory();
-        Path logPath = discovery.logPath(scope.projectHash());
+        // Background-child stderr lands in <hash>.stderr.log so the structured rotating
+        // rebuild log (UC04 §13) can own the <hash>.log slot.
+        Path logPath = discovery.stderrLogPath(scope.projectHash());
 
         // Build the child command: same java + classpath + main, with --foreground +
         // --internal-spawned + the original user flags (minus --foreground if present).

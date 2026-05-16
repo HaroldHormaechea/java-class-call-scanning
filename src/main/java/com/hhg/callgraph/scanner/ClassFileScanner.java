@@ -26,7 +26,9 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -54,6 +56,7 @@ public class ClassFileScanner {
         SourceIndex sourceIndex = new SourceIndex();
         FieldAccessIndex fieldAccessIndex = new FieldAccessIndex();
         TestIndex testIndex = new TestIndex();
+        Map<String, Path> classOrigins = new HashMap<>();
 
         for (Path path : paths) {
             ScanResult partial = scanPath(path);
@@ -61,8 +64,9 @@ public class ClassFileScanner {
             sourceIndex.mergeFrom(partial.sourceIndex());
             fieldAccessIndex.mergeFrom(partial.fieldAccessIndex());
             testIndex.mergeFrom(partial.testIndex());
+            classOrigins.putAll(partial.classOrigins());
         }
-        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex);
+        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex, classOrigins);
     }
 
     /**
@@ -88,13 +92,43 @@ public class ClassFileScanner {
         SourceIndex sourceIndex = new SourceIndex();
         FieldAccessIndex fieldAccessIndex = new FieldAccessIndex();
         TestIndex testIndex = new TestIndex();
+        Map<String, Path> classOrigins = new HashMap<>();
 
         try (Stream<Path> paths = Files.walk(classesRootDir)) {
             paths.filter(p -> p.toString().endsWith(".class"))
-                    .forEach(classFile -> processClassFile(graph, sourceIndex, fieldAccessIndex, testIndex, classFile));
+                    .forEach(classFile -> processClassFile(graph, sourceIndex, fieldAccessIndex,
+                            testIndex, classOrigins, classFile, classFile.toAbsolutePath()));
         }
 
-        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex);
+        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex, classOrigins);
+    }
+
+    /**
+     * Scans an explicit list of {@code .class} files (used by the incremental rebuilder
+     * for {@code CLASSPATH_BYTECODE} events). Each file's origin is recorded as itself.
+     */
+    public ScanResult scanClassFiles(List<Path> classFiles) throws IOException {
+        CallGraph graph = new CallGraph();
+        SourceIndex sourceIndex = new SourceIndex();
+        FieldAccessIndex fieldAccessIndex = new FieldAccessIndex();
+        TestIndex testIndex = new TestIndex();
+        Map<String, Path> classOrigins = new HashMap<>();
+
+        for (Path classFile : classFiles) {
+            if (!Files.exists(classFile)) continue;
+            processClassFile(graph, sourceIndex, fieldAccessIndex, testIndex,
+                    classOrigins, classFile, classFile.toAbsolutePath());
+        }
+        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex, classOrigins);
+    }
+
+    /**
+     * Scans a single JAR or WAR archive (used by the incremental rebuilder for
+     * {@code CLASSPATH_ARCHIVE} events). Every class contributed gets the archive
+     * itself as its origin path.
+     */
+    public ScanResult scanArchive(Path jarOrWar) throws IOException {
+        return scanPath(jarOrWar);
     }
 
     // --- Archive scanning methods (static wrappers kept for backward compatibility) ---
@@ -112,6 +146,8 @@ public class ClassFileScanner {
         SourceIndex sourceIndex = new SourceIndex();
         FieldAccessIndex fieldAccessIndex = new FieldAccessIndex();
         TestIndex testIndex = new TestIndex();
+        Map<String, Path> classOrigins = new HashMap<>();
+        Path origin = warPath.toAbsolutePath();
 
         try (FileSystem fs = FileSystems.newFileSystem(warPath, (ClassLoader) null)) {
             Path classesRoot = fs.getPath("WEB-INF/classes");
@@ -121,7 +157,8 @@ public class ClassFileScanner {
                             .forEach(classFile -> {
                                 try {
                                     byte[] bytes = Files.readAllBytes(classFile);
-                                    processClassBytes(bytes, graph, sourceIndex, fieldAccessIndex, testIndex, detectors);
+                                    processClassBytes(bytes, graph, sourceIndex, fieldAccessIndex,
+                                            testIndex, classOrigins, origin, detectors);
                                 } catch (IOException e) {
                                     throw new RuntimeException("Failed to read class in WAR: " + classFile, e);
                                 }
@@ -136,7 +173,8 @@ public class ClassFileScanner {
                             .forEach(jarFile -> {
                                 try {
                                     byte[] jarBytes = Files.readAllBytes(jarFile);
-                                    scanNestedJar(jarBytes, graph, sourceIndex, fieldAccessIndex, testIndex, detectors);
+                                    scanNestedJar(jarBytes, graph, sourceIndex, fieldAccessIndex,
+                                            testIndex, classOrigins, origin, detectors);
                                 } catch (IOException e) {
                                     throw new RuntimeException("Failed to read nested JAR in WAR: " + jarFile, e);
                                 }
@@ -145,7 +183,7 @@ public class ClassFileScanner {
             }
         }
 
-        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex);
+        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex, classOrigins);
     }
 
     private ScanResult doScanJar(Path jarPath) throws IOException {
@@ -153,6 +191,8 @@ public class ClassFileScanner {
         SourceIndex sourceIndex = new SourceIndex();
         FieldAccessIndex fieldAccessIndex = new FieldAccessIndex();
         TestIndex testIndex = new TestIndex();
+        Map<String, Path> classOrigins = new HashMap<>();
+        Path origin = jarPath.toAbsolutePath();
 
         try (FileSystem fs = FileSystems.newFileSystem(jarPath, (ClassLoader) null)) {
             Path root = fs.getPath("/");
@@ -161,7 +201,8 @@ public class ClassFileScanner {
                         .forEach(classFile -> {
                             try {
                                 byte[] bytes = Files.readAllBytes(classFile);
-                                processClassBytes(bytes, graph, sourceIndex, fieldAccessIndex, testIndex, detectors);
+                                processClassBytes(bytes, graph, sourceIndex, fieldAccessIndex,
+                                        testIndex, classOrigins, origin, detectors);
                             } catch (IOException e) {
                                 throw new RuntimeException("Failed to read class in JAR: " + classFile, e);
                             }
@@ -169,17 +210,19 @@ public class ClassFileScanner {
             }
         }
 
-        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex);
+        return new ScanResult(graph, sourceIndex, fieldAccessIndex, testIndex, classOrigins);
     }
 
     private static void scanNestedJar(byte[] jarBytes, CallGraph graph, SourceIndex sourceIndex,
                                       FieldAccessIndex fieldAccessIndex, TestIndex testIndex,
+                                      Map<String, Path> classOrigins, Path origin,
                                       List<TestMethodDetector> detectors) throws IOException {
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(jarBytes))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 if (!entry.isDirectory() && entry.getName().endsWith(".class")) {
-                    processClassBytes(zis.readAllBytes(), graph, sourceIndex, fieldAccessIndex, testIndex, detectors);
+                    processClassBytes(zis.readAllBytes(), graph, sourceIndex, fieldAccessIndex,
+                            testIndex, classOrigins, origin, detectors);
                 }
                 zis.closeEntry();
             }
@@ -189,10 +232,12 @@ public class ClassFileScanner {
     // --- Core processing ---
 
     private void processClassFile(CallGraph graph, SourceIndex sourceIndex,
-                                  FieldAccessIndex fieldAccessIndex, TestIndex testIndex, Path classFile) {
+                                  FieldAccessIndex fieldAccessIndex, TestIndex testIndex,
+                                  Map<String, Path> classOrigins, Path classFile, Path origin) {
         try {
             byte[] bytecode = Files.readAllBytes(classFile);
-            processClassBytes(bytecode, graph, sourceIndex, fieldAccessIndex, testIndex, detectors);
+            processClassBytes(bytecode, graph, sourceIndex, fieldAccessIndex, testIndex,
+                    classOrigins, origin, detectors);
         } catch (IOException e) {
             throw new RuntimeException("Failed to read class file: " + classFile, e);
         }
@@ -200,11 +245,16 @@ public class ClassFileScanner {
 
     private static void processClassBytes(byte[] bytecode, CallGraph graph, SourceIndex sourceIndex,
                                           FieldAccessIndex fieldAccessIndex, TestIndex testIndex,
+                                          Map<String, Path> classOrigins, Path origin,
                                           List<TestMethodDetector> detectors) {
         ClassReader classReader = new ClassReader(bytecode);
 
         ClassNode classNode = new ClassNode(Opcodes.ASM9);
         classReader.accept(classNode, 0);
+
+        if (origin != null && classNode.name != null) {
+            classOrigins.put(classNode.name, origin);
+        }
 
         String sourceFile = classNode.sourceFile;
         if (sourceFile == null) {

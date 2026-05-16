@@ -104,7 +104,17 @@ public final class Discovery {
     public Path directory()                     { return directory; }
     public Path filePath(String projectHash)    { return directory.resolve(projectHash + ".json"); }
     public Path lockPath(String projectHash)    { return directory.resolve(projectHash + ".lock"); }
+    /**
+     * Structured rebuild-log path used by the auto-watch subsystem (UC04 §13).
+     * Rotated as {@code <hash>.log.1 … <hash>.log.N}.
+     */
     public Path logPath(String projectHash)     { return directory.resolve(projectHash + ".log"); }
+    /**
+     * Captured stderr of a backgrounded child daemon. Distinct from {@link #logPath}
+     * so the structured rotating log (UC04 §13) can own the {@code .log} suffix without
+     * collision.
+     */
+    public Path stderrLogPath(String projectHash) { return directory.resolve(projectHash + ".stderr.log"); }
 
     public void ensureDirectory() throws IOException {
         Files.createDirectories(directory);
