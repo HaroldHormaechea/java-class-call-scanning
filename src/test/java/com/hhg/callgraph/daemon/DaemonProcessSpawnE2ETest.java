@@ -218,6 +218,33 @@ class DaemonProcessSpawnE2ETest {
         assertTrue(findEnv.getAsJsonObject("result").has("tree"),
                 "find-callers result must contain a 'tree' field");
 
+        // --- 8b. UC04 — writes outside watched roots must NOT trigger rebuilds ------
+        // The spawned daemon's watcher is registered against the benchmark classes dir
+        // and (since this test passes no --src) no source roots. Touching files inside
+        // the TempDir but OUTSIDE the registered classpath must not move the watcher's
+        // last_rebuild fingerprint. We snapshot watcher-status, write an unrelated file,
+        // wait one debounce window, then verify last_rebuild.timestamp is unchanged.
+        JsonObject statusBefore = sendAndReceive(rec.port(),
+                buildOpRequest("watcher-status", null));
+        assertTrue(statusBefore.get("ok").getAsBoolean(),
+                "watcher-status must be served: " + statusBefore);
+        JsonObject lrBefore = statusBefore.getAsJsonObject("result")
+                .getAsJsonObject("last_rebuild");
+        // If the watcher is on, last_rebuild is the initial scan (trigger=manual).
+        // If --no-watch was passed (not here) last_rebuild may also be populated.
+        // Touch a file in tempDir that the watcher cannot possibly be watching.
+        Path stray = tempDir.resolve("not-watched.txt");
+        Files.writeString(stray, "noise\n");
+        // Wait through one full default debounce window (1000ms) + safety margin.
+        Thread.sleep(1500);
+        JsonObject statusAfter = sendAndReceive(rec.port(),
+                buildOpRequest("watcher-status", null));
+        JsonObject lrAfter = statusAfter.getAsJsonObject("result")
+                .getAsJsonObject("last_rebuild");
+        assertEquals(lrBefore == null ? null : lrBefore.get("timestamp").getAsString(),
+                lrAfter == null ? null : lrAfter.get("timestamp").getAsString(),
+                "writes outside watched roots must NOT advance last_rebuild.timestamp");
+
         // --- 9. TCP shutdown --------------------------------------------------
         JsonObject shutdownEnv = sendAndReceive(rec.port(),
                 buildOpRequest("shutdown", null));

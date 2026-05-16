@@ -417,15 +417,17 @@ class OperationsBenchmarkTest {
         }
 
         @Test
-        @DisplayName("USER_FACING_OPS lists exactly the 9 + refresh-index")
+        @DisplayName("USER_FACING_OPS lists refresh-index + 8 query ops + watcher-status (UC04)")
         void userFacingOps() {
             // The MCP server registers a tool for each of these names (AC #3 / AC #20).
+            // UC04 AC #14 added watcher-status as the tenth user-facing op.
             assertEquals(List.of(
                     "refresh-index",
                     "find-callers", "find-callees",
                     "methods-in-class", "methods-at-line",
                     "find-field-readers", "find-field-writers",
-                    "impact-of-diff", "tests-for-diff"
+                    "impact-of-diff", "tests-for-diff",
+                    "watcher-status"
             ), Operations.USER_FACING_OPS);
         }
     }

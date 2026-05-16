@@ -40,6 +40,26 @@ public class SourceIndex {
         return locationByMethod.size();
     }
 
+    /** Deep copy used by the incremental rebuild path. */
+    public SourceIndex copy() {
+        SourceIndex clone = new SourceIndex();
+        clone.locationByMethod.putAll(this.locationByMethod);
+        return clone;
+    }
+
+    /** Removes every method-location entry whose method belongs to the given internal class. */
+    public void removeClass(String internalClassName) {
+        if (internalClassName == null) return;
+        java.util.Iterator<java.util.Map.Entry<MethodReference, SourceLocation>> it =
+                locationByMethod.entrySet().iterator();
+        while (it.hasNext()) {
+            MethodReference m = it.next().getKey();
+            if (internalClassName.equals(m.getClassName())) {
+                it.remove();
+            }
+        }
+    }
+
     /**
      * Matches a diff query path against a stored source file using two strategies:
      * <ol>

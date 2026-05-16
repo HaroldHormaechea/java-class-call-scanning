@@ -247,12 +247,20 @@ java -jar java-class-call-scanning.jar daemon start \
     [--src <srcDir>] [--src ...] \
     [--include <glob>] [--exclude <glob>] \
     [--idle-timeout <minutes>] \
-    [--foreground]
+    [--foreground] \
+    [--no-watch] \
+    [--watch-debounce-ms <N>] \
+    [--restart-drain-ms <N>] \
+    [--log-file <path>] \
+    [--log-max-size-mb <N>] \
+    [--log-max-files <N>]
 
 java -jar java-class-call-scanning.jar daemon stop --project <id-or-path>
 ```
 
 `--classpath` is required and repeatable. `--src` is optional and repeatable. `--include` / `--exclude` filter the scan. `--idle-timeout <minutes>` (≥ 1) triggers auto-shutdown after that many idle minutes; without it, the daemon runs until stopped. `--foreground` keeps the daemon attached to the launching process (required by MCP clients that spawn the daemon as a subprocess).
+
+The `--no-watch`, `--watch-debounce-ms`, `--restart-drain-ms`, `--log-file`, `--log-max-size-mb`, and `--log-max-files` flags control the auto-watch + incremental-rebuild subsystem — see [Auto-watch + incremental rebuild](#auto-watch--incremental-rebuild) below.
 
 On startup the daemon writes a **discovery file** containing the PID and the loopback port:
 
@@ -279,6 +287,7 @@ Once a daemon is running, query it with the same JAR. Each query subcommand take
 | `find-field-writers`    | `--project`, `--field`                                 | Methods that WRITE a given field FQN (JVM-descriptor form).                             |
 | `impact-of-diff`        | `--project`, `--diff <file>` \| `--diff-stdin`         | Parse a unified diff and emit the `impactedTrees` payload.                              |
 | `tests-for-diff`        | `--project`, `--diff <file>` \| `--diff-stdin`         | Flat list of impacted tests `{fqn, type, displayName, root_change}` for a unified diff. |
+| `watcher-status`        | `--project`                                            | Returns the current auto-watch state and the single source of truth for "when was the index last touched". |
 
 **FQN format:**
 
@@ -312,9 +321,105 @@ All query subcommands return JSON on stdout. Errors return `{"error": "...", "ki
 
 ### MCP stdio server
 
-The daemon also speaks MCP on its stdio. The server identifies itself as `java-class-call-scanning` and advertises the nine tools listed above (same names, same payload shapes).
+The daemon also speaks MCP on its stdio. The server identifies itself as `java-class-call-scanning` and advertises the ten tools listed above (same names, same payload shapes).
 
-To connect: configure an MCP-aware client (e.g. an LLM agent) to launch the daemon as a subprocess with `--foreground`, so the process stays attached to the client for the duration of the session. Most MCP client configs accept a command + args; point it at the fat JAR with `daemon start --foreground --classpath ... --src ...` and the nine tools become callable through the client's standard tool-use interface.
+To connect: configure an MCP-aware client (e.g. an LLM agent) to launch the daemon as a subprocess with `--foreground`, so the process stays attached to the client for the duration of the session. Most MCP client configs accept a command + args; point it at the fat JAR with `daemon start --foreground --classpath ... --src ...` and the ten tools become callable through the client's standard tool-use interface.
+
+### Auto-watch + incremental rebuild
+
+When `daemon start` runs (without `--no-watch`), the daemon watches its classpath roots, source roots, and the nearest-ancestor build/dependency-configuration files (`build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts`, `gradle/libs.versions.toml`, `pom.xml`). FS events are coalesced into a configurable debounce window and applied incrementally — only the classes whose contributing files changed are re-scanned, then merged into a draft snapshot and swapped under the existing `AtomicReference<IndexSnapshot>` discipline. Concurrent reads (TCP queries and MCP tool calls) never block during a rebuild.
+
+The watcher is built on `java.nio.file.WatchService` only — no new runtime dependency. On macOS, `WatchService` is backed by polling kqueue and adds noticeable latency (multi-second) between an FS write and the rebuild trigger. This is the documented trade-off for the no-new-dep approach.
+
+**Flags (all optional, all on `daemon start`):**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--no-watch` | (watcher on) | Disable the watcher entirely. `watcher-status` then returns `{"enabled": false, ...}`. |
+| `--watch-debounce-ms <N>` | `1000` | Debounce window in milliseconds. A burst of N FS events within this window produces exactly one rebuild log. |
+| `--restart-drain-ms <N>` | `2000` | Grace period for in-flight TCP requests during a graceful self-restart; after the deadline, remaining handlers are force-closed. |
+| `--log-file <path>` | `<cache-dir>/<project-hash>.log` | Override the structured rebuild log path. |
+| `--log-max-size-mb <N>` | `10` | Per-file rotation size threshold. |
+| `--log-max-files <N>` | `5` | Number of rotated files retained (`.log.1` … `.log.N`); the oldest is pruned. |
+
+**Event classification & precedence (per debounce window):**
+
+1. **Build-config file changed** → graceful in-process self-restart (see below).
+2. **`.class` or `.jar`/`.war` under a classpath root changed** → incremental rebuild.
+3. **`.java` only changed** (no matching bytecode event in the same window) → one `skipped` log line with `outcome.reason: "source-only-no-bytecode-change"`; the index is **not** mutated. The daemon does not invoke the build itself; this is a breadcrumb for users wondering why their query result didn't update.
+4. **Empty / unrecognised** → no-op.
+
+A `.java` save that the IDE auto-compiles into a `.class` within the same window produces **one** rebuild log (case 2), never a skipped line.
+
+**Incremental-rebuild log format** — one JSON object per line, written to **both** stderr (jsonl) and the rotating log file. Schema:
+
+```json
+{
+  "event": "watch.rebuild",
+  "schema_version": 1,
+  "trigger.watcher": "classpath",
+  "trigger.paths": ["/abs/.../Foo.class"],
+  "trigger.event_count": 3,
+  "scope.classes": ["com.acme.Foo"],
+  "scope.archives": [],
+  "outcome": "success",
+  "elapsed_ms": 42,
+  "index.methods_before": 1234,
+  "index.methods_after": 1240,
+  "index.edges_before": 5678,
+  "index.edges_after": 5701,
+  "timestamp": "2026-05-16T09:03:41.448Z"
+}
+```
+
+On `outcome` ∈ {`failure`, `skipped`}, an extra `"outcome.reason"` key carries the free-text. `trigger.watcher` values: `classpath` / `source` / `build-config` / `manual` (the last is emitted by `refresh-index`).
+
+**Failure handling.** If an incremental rebuild throws (e.g., malformed bytecode caught mid-compile), exactly one retry is attempted on the same debounce scheduler. If the retry fails, a `failure` log line is emitted with `outcome.reason: "<exception class>: <message>"`; the prior snapshot remains active; the daemon does not crash.
+
+**Edges that don't get cleaned up.** When a class `X` is re-scanned, edges where `X` is the *caller* are dropped and replaced. Edges where `X` is only the *callee* (incoming edges from classes not currently being re-scanned) are retained — this is the standard incremental-build trade-off and produces transient "ghost" edges if a callee method is renamed/removed. Users who care can run `refresh-index` for a full rescan.
+
+**Build-config change → graceful in-process self-restart.** When a watched build/dependency-configuration file changes, after the debounce window the daemon:
+
+1. Emits `watch.self_restart phase: "starting"` with the triggering path.
+2. Stops accepting new TCP connections; drains in-flight TCP requests for up to `--restart-drain-ms` (default 2000 ms); force-closes anything remaining.
+3. Stops the watcher; removes the discovery file. The project's `FileLock` stays held (still one daemon per project).
+4. Re-runs the initial scan against the original launch scope.
+5. Re-binds TCP on a **fresh OS-assigned ephemeral port** and rewrites the discovery file (same `<project-hash>` since the canonical classpath + source roots are unchanged) with the new PID/port and **the restart wall-clock time** in `started_at_epoch_millis`.
+6. Restarts the watcher.
+7. Emits `watch.self_restart phase: "completed"` with total `elapsed_ms`.
+
+**The MCP stdio surface is preserved across self-restart.** Stdio MCP is a single-process contract: closing `System.in`/`System.out` signals end-of-process to the client. Instead, the daemon holds a single `McpSyncServer` for the lifetime of the JVM and atomically swaps the underlying `Operations` reference (`setOperations(...)`). The MCP client's session, tool list, and JSON schemas are identical before and after the restart; no protocol renegotiation occurs.
+
+**TCP clients must re-read the discovery file on connect failure**, since the TCP port changes on restart. UC01's contract already required this fall-back; it continues to apply.
+
+**On any self-restart failure** (e.g., the new initial scan throws because `build.gradle` is malformed), the daemon emits `watch.self_restart phase: "failed"` with `outcome.reason: "<exception class>: <message>"`, releases the project lock, and exits non-zero. **No retry, no zombie state, no fall-back to the prior snapshot.**
+
+**`watcher-status` payload (UC04 AC #14):**
+
+```json
+{
+  "enabled": true,
+  "watched_classpath_roots": ["<abs>", "..."],
+  "watched_source_roots": ["<abs>", "..."],
+  "watched_build_config_files": ["<abs>", "..."],
+  "debounce_ms": 1000,
+  "last_rebuild": {
+    "timestamp": "2026-05-16T09:03:41.448Z",
+    "trigger_watcher": "classpath",
+    "outcome": "success",
+    "elapsed_ms": 42,
+    "scope_class_count": 1,
+    "scope_archive_count": 0
+  },
+  "last_error": null,
+  "log_file": "/abs/path/to/<hash>.log",
+  "log_schema_version": 1
+}
+```
+
+A successful rebuild sets `last_error = null` (`refresh-index` does the same), so `watcher-status` is the single source of truth for "when was the index last touched". The structured log line shape (flat sibling keys with literal `.`) and the status-payload shape (nested objects with snake_case inner keys) are deliberately different — the former is jsonl-tail-friendly, the latter is API-typed-client-friendly.
+
+**Stderr capture file.** When the daemon is launched in background mode, its child JVM's stderr is captured to `<cache-dir>/<project-hash>.stderr.log` (renamed from the pre-UC04 `<project-hash>.log` to free the `.log` slot for the structured rotating rebuild log).
 
 ## Project layout
 

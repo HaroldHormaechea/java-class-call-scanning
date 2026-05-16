@@ -63,4 +63,39 @@ public class FieldAccessIndex {
         }
         return Collections.unmodifiableSet(result);
     }
+
+    /** Deep copy used by the incremental rebuild path. */
+    public FieldAccessIndex copy() {
+        FieldAccessIndex clone = new FieldAccessIndex();
+        for (Map.Entry<FieldReference, Set<MethodReference>> e : readers.entrySet()) {
+            clone.readers.put(e.getKey(), new HashSet<>(e.getValue()));
+        }
+        for (Map.Entry<FieldReference, Set<MethodReference>> e : writers.entrySet()) {
+            clone.writers.put(e.getKey(), new HashSet<>(e.getValue()));
+        }
+        return clone;
+    }
+
+    /**
+     * Removes every field whose owner class matches, and every accessor whose owner class
+     * matches. Mirrors {@link CallGraph#removeClass} semantics: only the owner-class side
+     * is purged; cross-class survival of cleanup happens the next time that class is
+     * re-scanned.
+     */
+    public void removeClass(String internalClassName) {
+        if (internalClassName == null) return;
+        // 1. Remove every field owned by this class (both maps).
+        readers.keySet().removeIf(f -> internalClassName.equals(f.className()));
+        writers.keySet().removeIf(f -> internalClassName.equals(f.className()));
+        // 2. From the surviving fields, strip accessor methods owned by this class.
+        for (Set<MethodReference> set : readers.values()) {
+            set.removeIf(m -> internalClassName.equals(m.getClassName()));
+        }
+        for (Set<MethodReference> set : writers.values()) {
+            set.removeIf(m -> internalClassName.equals(m.getClassName()));
+        }
+        // 3. Drop now-empty entries.
+        readers.entrySet().removeIf(e -> e.getValue().isEmpty());
+        writers.entrySet().removeIf(e -> e.getValue().isEmpty());
+    }
 }

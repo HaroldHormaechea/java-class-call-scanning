@@ -15,15 +15,16 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Covers AC #3 — the MCP stdio server advertises the same nine user-facing operations
- * as MCP tools. We don't fully boot the stdio transport (it consumes {@code System.in}
+ * Covers AC #3 — the MCP stdio server advertises the same ten user-facing operations
+ * as MCP tools (the original nine from UC01 plus {@code watcher-status} added in UC04
+ * AC #14). We don't fully boot the stdio transport (it consumes {@code System.in}
  * which would deadlock tests), but we verify:
  *
  * <ul>
  *   <li>The list of tool names in {@link McpStdioServer}'s source file equals the
  *       canonical list from {@link Operations#USER_FACING_OPS}.</li>
  *   <li>For every user-facing op there's a string-literal {@code tool("&lt;name&gt;", ...)}
- *       call in the source, ensuring all 9 are registered.</li>
+ *       call in the source, ensuring all 10 are registered.</li>
  *   <li>Each tool description in the file is non-empty.</li>
  *   <li>The MCP handler delegates to {@link Operations#dispatch} — verified by
  *       parity with the TCP path inside {@code TcpServerIntegrationTest} plus the
@@ -35,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * System.out} on construction, so instantiating it in a JUnit test would consume
  * standard streams shared with Gradle's test executor.
  */
-@DisplayName("MCP stdio — 9 tools registered (AC #3)")
+@DisplayName("MCP stdio — 10 tools registered (AC #3 + UC04 AC #14)")
 class McpServerToolListTest {
 
     private static final Path SOURCE = Path.of(System.getProperty("user.dir"))
@@ -51,8 +52,8 @@ class McpServerToolListTest {
             assertTrue(src.contains("tool(\"" + op + "\""),
                     "no MCP tool registration for op '" + op + "' in McpStdioServer.java");
         }
-        // Exactly 9 user-facing tools (refresh-index + 8 query ops).
-        assertEquals(9, Operations.USER_FACING_OPS.size());
+        // Exactly 10 user-facing tools (refresh-index + 8 query ops + watcher-status).
+        assertEquals(10, Operations.USER_FACING_OPS.size());
     }
 
     @Test
@@ -73,8 +74,13 @@ class McpServerToolListTest {
     @DisplayName("MCP handler delegates to Operations.dispatch — wired via the constructor")
     void handlerWiredToOperations() throws Exception {
         String src = Files.readString(SOURCE);
-        assertTrue(src.contains("operations.dispatch(op, args)"),
-                "MCP tool handler must route through Operations.dispatch (parity with TCP path)");
+        // UC04 §6 introduced an atomic swap of the underlying Operations on self-restart, so
+        // the field is now named `currentOperations` and the dispatch call reads
+        // `currentOperations.dispatch(op, args)`. Either spelling is acceptable so long as
+        // the file routes through the Operations façade exactly once per tool call.
+        assertTrue(src.contains("currentOperations.dispatch(op, args)"),
+                "MCP tool handler must route through Operations.dispatch (parity with TCP path); "
+                        + "UC04 renamed the field to 'currentOperations' for the self-restart swap");
         // System.err for logs (System.out reserved for MCP protocol stream)
         assertTrue(src.contains("System.err"),
                 "MCP server must log to System.err (System.out reserved for protocol)");
@@ -103,18 +109,21 @@ class McpServerToolListTest {
     }
 
     @Test
-    @DisplayName("Canonical list of nine ops matches the contract in the use case")
+    @DisplayName("Canonical list of ten ops matches the contract in the use case")
     void contractList() {
         assertEquals(List.of(
                 "refresh-index",
                 "find-callers", "find-callees",
                 "methods-in-class", "methods-at-line",
                 "find-field-readers", "find-field-writers",
-                "impact-of-diff", "tests-for-diff"
+                "impact-of-diff", "tests-for-diff",
+                "watcher-status"
         ), Operations.USER_FACING_OPS);
-        // Note: there are 9 user-facing tools advertised by MCP; the daemon-internal
-        // ping/shutdown ops are TCP-only and intentionally NOT exposed via MCP.
+        // Note: there are 10 user-facing tools advertised by MCP (UC01's nine plus
+        // UC04 AC #14's watcher-status); the daemon-internal ping/shutdown ops are
+        // TCP-only and intentionally NOT exposed via MCP.
         assertFalse(Operations.USER_FACING_OPS.contains("ping"));
         assertFalse(Operations.USER_FACING_OPS.contains("shutdown"));
+        assertTrue(Operations.USER_FACING_OPS.contains("watcher-status"));
     }
 }

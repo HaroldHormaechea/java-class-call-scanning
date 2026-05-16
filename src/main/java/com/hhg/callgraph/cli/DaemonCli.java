@@ -9,6 +9,8 @@ import com.hhg.callgraph.daemon.Daemon;
 import com.hhg.callgraph.daemon.Daemonization;
 import com.hhg.callgraph.daemon.Discovery;
 import com.hhg.callgraph.daemon.ScopeConfig;
+import com.hhg.callgraph.daemon.watch.LaunchArgs;
+import com.hhg.callgraph.daemon.watch.WatcherConfig;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -45,7 +47,8 @@ public final class DaemonCli {
             "find-callers", "find-callees",
             "methods-in-class", "methods-at-line",
             "find-field-readers", "find-field-writers",
-            "impact-of-diff", "tests-for-diff"
+            "impact-of-diff", "tests-for-diff",
+            "watcher-status"
     );
 
     public static int dispatch(String[] args) {
@@ -66,6 +69,7 @@ public final class DaemonCli {
                 case "find-field-writers"  -> runFindField("find-field-writers", rest);
                 case "impact-of-diff"      -> runDiffOp("impact-of-diff", rest);
                 case "tests-for-diff"      -> runDiffOp("tests-for-diff", rest);
+                case "watcher-status"      -> runQueryNoArgs("watcher-status", rest);
                 default -> {
                     String suggestion = SubcommandParser.suggestClosestName(sub, SUBCOMMANDS);
                     String detail = "unknown subcommand: " + sub
@@ -103,9 +107,12 @@ public final class DaemonCli {
     private static int runDaemonStart(String[] args) {
         SubcommandParser p = new SubcommandParser("daemon start",
                 Set.of("--classpath", "--src", "--include", "--exclude",
-                        "--idle-timeout", "--foreground", "--internal-spawned", "--force"),
+                        "--idle-timeout", "--foreground", "--internal-spawned", "--force",
+                        // UC04 watcher flags
+                        "--no-watch", "--watch-debounce-ms", "--restart-drain-ms",
+                        "--log-file", "--log-max-size-mb", "--log-max-files"),
                 Set.of("--classpath", "--src", "--include", "--exclude"),
-                Set.of("--foreground", "--internal-spawned", "--force"));
+                Set.of("--foreground", "--internal-spawned", "--force", "--no-watch"));
         Map<String, List<String>> parsed = p.parse(args);
 
         List<Path> classpath = SubcommandParser.allOrEmpty(parsed, "--classpath")
@@ -137,12 +144,40 @@ public final class DaemonCli {
         boolean foreground = SubcommandParser.booleanFlag(parsed, "--foreground");
         boolean force      = SubcommandParser.booleanFlag(parsed, "--force");
 
+        // UC04 watcher options.
+        boolean noWatch = SubcommandParser.booleanFlag(parsed, "--no-watch");
+        long debounceMs = WatcherConfig.DEFAULT_DEBOUNCE_MS;
+        long restartDrainMs = WatcherConfig.DEFAULT_RESTART_DRAIN_MS;
+        long logMaxSizeBytes = WatcherConfig.DEFAULT_LOG_MAX_SIZE_BYTES;
+        int  logMaxFiles = WatcherConfig.DEFAULT_LOG_MAX_FILES;
+        Path logFileOverride = null;
+        try {
+            String s = SubcommandParser.firstOrNull(parsed, "--watch-debounce-ms");
+            if (s != null) debounceMs = Long.parseLong(s);
+            s = SubcommandParser.firstOrNull(parsed, "--restart-drain-ms");
+            if (s != null) restartDrainMs = Long.parseLong(s);
+            s = SubcommandParser.firstOrNull(parsed, "--log-max-size-mb");
+            if (s != null) logMaxSizeBytes = Long.parseLong(s) * 1024L * 1024L;
+            s = SubcommandParser.firstOrNull(parsed, "--log-max-files");
+            if (s != null) logMaxFiles = Integer.parseInt(s);
+            s = SubcommandParser.firstOrNull(parsed, "--log-file");
+            if (s != null) logFileOverride = Path.of(s);
+        } catch (NumberFormatException nfe) {
+            return printErrorAndExit("bad-request",
+                    "numeric watcher flag is malformed: " + nfe.getMessage(), 2);
+        }
+
         ScopeConfig scope = ScopeConfig.of(classpath, sources, include, exclude);
         Discovery discovery = Discovery.defaults(Daemon.DAEMON_VERSION);
+        Path effectiveLog = logFileOverride != null
+                ? logFileOverride : discovery.logPath(scope.projectHash());
+        WatcherConfig watcherConfig = new WatcherConfig(!noWatch, debounceMs, restartDrainMs,
+                effectiveLog, logMaxSizeBytes, logMaxFiles);
 
         if (foreground || Daemonization.wasInternallySpawned(Arrays.asList(args))) {
             try {
-                Daemon daemon = Daemon.startForScope(scope, discovery, idleMinutes, force);
+                LaunchArgs launchArgs = new LaunchArgs(scope, idleMinutes, foreground, watcherConfig);
+                Daemon daemon = Daemon.startForScope(launchArgs, discovery, force);
                 JsonObject out = new JsonObject();
                 out.addProperty("status", "started");
                 out.addProperty("project_hash", daemon.projectHash());
